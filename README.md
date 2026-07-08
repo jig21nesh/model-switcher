@@ -130,7 +130,7 @@ Fill in `pricing_usd_per_mtok` — **$ per million tokens**, four rates per mode
 "complexity": { "threshold": 5 }
 ```
 
-Prompts scoring at or above this (0–10) are delegated. Raise it if too much gets delegated, lower it for more Opus. Scoring signals: strong task verbs (refactor, implement, migrate, debug, ...) weigh most, plus moderate domain terms, prompt length, numbered multi-step lists, code blocks, and multiple file paths; short pure questions are capped as simple. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
+Prompts scoring at or above this (0–10, integer or float, clamped to 1–10) are delegated. Raise it if too much gets delegated, lower it for more Opus. Scoring signals: strong task verbs including inflections (refactor/refactoring, migrate/migrating, ...) and incident vocabulary (race condition, deadlock, memory leak, vulnerability, ...) weigh most, plus moderate domain terms, prompt length, numbered multi-step lists, code blocks, multiple file paths, and pasted stack traces. Negated verbs ("don't refactor") don't count; definitional questions ("what is an end-to-end test?") and short affirmations ("yes go ahead") are capped as simple. Slash commands, local-command output, and subagent contexts are never scored. Scoring reads at most the first 10 KB of a prompt, so huge pastes can't stall submission. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
 
 ## What you'll see
 
