@@ -153,6 +153,13 @@ def threshold_from(config: dict) -> float:
     return clamped
 
 
+def _heavy_agent_name(model: str) -> str:
+    # Keep in sync with scripts/generate_agent.py: the installer stamps this name into the agent
+    # file so the model is visible in Claude Code's task line (e.g. heavy-task-opus).
+    suffix = re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-")
+    return f"heavy-task-{suffix}" if suffix else "heavy-task"
+
+
 def models_configured(config: dict) -> bool:
     models = config.get("models")
     if not isinstance(models, dict):
@@ -239,12 +246,13 @@ def build_context(prompt: str, session_id: str, config: dict) -> str:
         score = score_prompt(prompt)
         if score >= threshold:
             complex_model = config["models"]["complex"]
+            agent = _heavy_agent_name(complex_model)
             parts.append(
                 f"[model-switcher] MANDATORY ROUTING POLICY — complexity score {score}/10 (threshold "
                 f"{threshold:g}): this prompt is classified COMPLEX. This session runs on the low-cost "
-                f"model tier; complex work must be executed by the 'heavy-task' subagent (configured "
+                f"model tier; complex work must be executed by the '{agent}' subagent (configured "
                 f"model: {complex_model}). Do not perform this task yourself: your FIRST action must be "
-                "spawning 'heavy-task' via your subagent tool (named Agent or Task depending on version), "
+                f"spawning '{agent}' via your subagent tool (named Agent or Task depending on version), "
                 "passing the user's full request and any context it needs. Relay the subagent's result to "
                 "the user afterwards. Answer directly only if the user's message explicitly says not to "
                 "delegate."

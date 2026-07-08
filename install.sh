@@ -77,9 +77,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
     --settings "$SETTINGS" --install-dir "$INSTALL_DIR" --config "$CONFIG" --manifest "$MANIFEST"
   python3 "$REPO_DIR/scripts/manage_claude_md.py" uninstall \
     --claude-md "$CLAUDE_DIR/CLAUDE.md" --manifest "$MANIFEST"
+  python3 "$REPO_DIR/scripts/generate_agent.py" uninstall \
+    --agents-dir "$AGENTS_DIR" --manifest "$MANIFEST"
   rm -f "$INSTALL_DIR/complexity_router.py" "$INSTALL_DIR/cost_statusline.py" \
     "$INSTALL_DIR/merge_settings.py" "$INSTALL_DIR/manage_claude_md.py" \
-    "$INSTALL_DIR/claude-md-section.md" "$MANIFEST" "$AGENTS_DIR/heavy-task.md"
+    "$INSTALL_DIR/claude-md-section.md" "$MANIFEST"
   rm -rf "$INSTALL_DIR/state"
   echo "model-switcher removed. Kept: $CONFIG. Restart Claude Code sessions to apply."
   exit 0
@@ -94,12 +96,9 @@ cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/statusline/cost_statusline.
 COMPLEX_MODEL="$(read_config_model complex opus)"
 SIMPLE_MODEL="$(read_config_model simple sonnet)"
 
-python3 - "$REPO_DIR/agents/heavy-task.md" "$AGENTS_DIR/heavy-task.md" "$COMPLEX_MODEL" <<'PY'
-import re, sys
-from pathlib import Path
-source, target, model = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-target.write_text(re.sub(r"^model: .*$", f"model: {model}", source.read_text(), count=1, flags=re.MULTILINE))
-PY
+AGENT_INFO=$(python3 "$REPO_DIR/scripts/generate_agent.py" install \
+  --source "$REPO_DIR/agents/heavy-task.md" --agents-dir "$AGENTS_DIR" \
+  --model "$COMPLEX_MODEL" --manifest "$MANIFEST")
 
 SET_MODEL_ARGS=()
 if [ "$SKIP_MODEL" -eq 0 ]; then SET_MODEL_ARGS=(--set-model "$SIMPLE_MODEL"); fi
@@ -114,7 +113,7 @@ python3 "$INSTALL_DIR/manage_claude_md.py" install \
 echo "model-switcher installed:"
 echo "  hook:       UserPromptSubmit -> $INSTALL_DIR/complexity_router.py"
 echo "  statusline: $INSTALL_DIR/cost_statusline.py"
-echo "  agent:      $AGENTS_DIR/heavy-task.md (model: $COMPLEX_MODEL)"
+echo "  ${AGENT_INFO}"
 echo "  policy:     managed block in $CLAUDE_DIR/CLAUDE.md"
 if [ -f "$CLAUDE_DIR/CLAUDE.md.model-switcher.bak" ]; then
   echo "              (pre-install backup: $CLAUDE_DIR/CLAUDE.md.model-switcher.bak)"

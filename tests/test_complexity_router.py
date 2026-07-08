@@ -68,8 +68,7 @@ class TestRun:
         write_config(home, CONFIGURED)
         out = json.loads(router.run(hook_input("refactor the auth module, migrate the schema and add tests")))
         context = out["hookSpecificOutput"]["additionalContext"]
-        assert "heavy-task" in context
-        assert "opus" in context
+        assert "heavy-task-opus" in context
         assert "MANDATORY ROUTING POLICY" in context
         assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
 
