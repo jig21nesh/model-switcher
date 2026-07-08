@@ -10,13 +10,52 @@ SETTINGS="$CLAUDE_DIR/settings.json"
 CONFIG="$INSTALL_DIR/config.json"
 MANIFEST="$INSTALL_DIR/installed.json"
 
+usage() {
+  cat <<EOF
+model-switcher installer — per-prompt model routing and offline cost statusline for Claude Code.
+
+Usage: ./install.sh [OPTIONS]
+
+Installs into $CLAUDE_DIR (override with the CLAUDE_DIR environment variable):
+  - UserPromptSubmit hook that scores every prompt and routes complex ones
+    to the 'heavy-task' subagent (your configured heavy model)
+  - cost statusline that prices each turn/session offline from the transcript
+    (wraps your existing statusline if you have one)
+  - heavy-task subagent definition (model taken from config.json)
+  - marker-managed routing-policy block in CLAUDE.md (one-time backup kept)
+  - merged entries in settings.json (one-time backup kept; never overwrites)
+
+Options:
+  --skip-model    Leave the session model in settings.json untouched.
+                  Default: set it to models.simple from config.json (the
+                  previous value is recorded and restored on uninstall).
+  --uninstall     Remove everything the installer added: hook, statusline,
+                  agent, CLAUDE.md block, and settings entries; restores your
+                  previous model and statusline from the manifest.
+                  Kept: $CLAUDE_DIR/model-switcher/config.json (models, pricing).
+  -h, --help      Show this help and exit.
+
+Configuration:  $CLAUDE_DIR/model-switcher/config.json
+                (models.complex/simple, complexity.threshold, pricing_usd_per_mtok)
+Pricing rates:  https://claude.com/pricing
+Documentation:  https://github.com/jig21nesh/model-switcher
+
+Restart Claude Code sessions after installing or uninstalling.
+EOF
+}
+
 UNINSTALL=0
 SKIP_MODEL=0
 for arg in "$@"; do
   case "$arg" in
     --uninstall) UNINSTALL=1 ;;
     --skip-model) SKIP_MODEL=1 ;;
-    *) echo "usage: install.sh [--uninstall] [--skip-model]" >&2; exit 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      echo "install.sh: unknown option '$arg'" >&2
+      echo "Try './install.sh --help' for more information." >&2
+      exit 2
+      ;;
   esac
 done
 

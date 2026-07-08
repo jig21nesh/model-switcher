@@ -97,6 +97,7 @@ Installer options:
 ./install.sh                # full install (also sets session model to models.simple)
 ./install.sh --skip-model   # install hook/statusline/agent but leave your session model alone
 ./install.sh --uninstall    # remove everything it added; restores your previous statusline and model
+./install.sh --help         # full option reference and what gets installed where
 ```
 
 ## Configuration
