@@ -58,7 +58,8 @@ NEGATION_TAIL_RE = re.compile(
     r"\s+(?:\w+\s+){0,2}$"
 )
 COMMAND_TAG_RE = re.compile(
-    r"</?(?:command-name|command-message|command-args|local-command-stdout|local-command-caveat)>"
+    r"</?(?:command-name|command-message|command-args|local-command-stdout|local-command-caveat"
+    r"|agent-message)(?:\s[^>]*)?>"
 )
 
 
@@ -239,12 +240,14 @@ def build_context(prompt: str, session_id: str, config: dict) -> str:
         if score >= threshold:
             complex_model = config["models"]["complex"]
             parts.append(
-                f"[model-switcher] Complexity score {score}/10 (threshold {threshold:g}): this prompt is "
-                f"classified COMPLEX. Delegate it to the 'heavy-task' subagent (configured model: "
-                f"{complex_model}) using your subagent tool (named Agent or Task depending on version): "
-                "pass the full request and any context it needs, then relay the subagent's result to the "
-                "user. If this prompt is clearly trivial despite its score, handle it in-session and "
-                "briefly say why."
+                f"[model-switcher] MANDATORY ROUTING POLICY — complexity score {score}/10 (threshold "
+                f"{threshold:g}): this prompt is classified COMPLEX. This session runs on the low-cost "
+                f"model tier; complex work must be executed by the 'heavy-task' subagent (configured "
+                f"model: {complex_model}). Do not perform this task yourself: your FIRST action must be "
+                "spawning 'heavy-task' via your subagent tool (named Agent or Task depending on version), "
+                "passing the user's full request and any context it needs. Relay the subagent's result to "
+                "the user afterwards. Answer directly only if the user's message explicitly says not to "
+                "delegate."
             )
 
     if not pricing_configured(config) and not state.get("pricing_nagged"):

@@ -8,6 +8,7 @@ Per-prompt model routing + offline cost statusline for Claude Code. See README.m
 - `hooks/complexity_router.py` — UserPromptSubmit hook (scoring + delegation directive).
 - `statusline/cost_statusline.py` — statusline command (offline cost from transcript).
 - `scripts/merge_settings.py` — settings.json install/uninstall logic (all merge logic lives here, not in bash).
+- `scripts/manage_claude_md.py` — marker-managed routing-policy block in the user's global CLAUDE.md; block text ships in `config/claude-md-section.md`.
 - `install.sh` — thin copier/orchestrator; keep logic out of it.
 - `agents/heavy-task.md` — subagent template; `model:` line is stamped by the installer.
 

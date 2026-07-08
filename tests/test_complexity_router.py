@@ -70,6 +70,7 @@ class TestRun:
         context = out["hookSpecificOutput"]["additionalContext"]
         assert "heavy-task" in context
         assert "opus" in context
+        assert "MANDATORY ROUTING POLICY" in context
         assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
 
     def test_simple_prompt_emits_nothing(self, home):
@@ -225,6 +226,11 @@ class TestRunGuards:
     def test_command_tags_skipped(self, home):
         write_config(home, CONFIGURED)
         assert router.run(hook_input("<command-name>/model</command-name> refactor and migrate everything")) == ""
+
+    def test_agent_message_relays_skipped(self, home):
+        write_config(home, CONFIGURED)
+        relay = '<agent-message from="general-purpose">refactor migrate deploy audit the entire codebase</agent-message>'
+        assert router.run(hook_input(relay)) == ""
 
     def test_agent_context_skipped(self, home):
         write_config(home, CONFIGURED)

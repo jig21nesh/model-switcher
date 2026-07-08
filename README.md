@@ -82,8 +82,14 @@ sequenceDiagram
 | `~/.claude/model-switcher/installed.json` | manifest of your pre-install `model`/`statusLine`, used by uninstall |
 | `~/.claude/agents/heavy-task.md` | the sub-agent, stamped with your configured complex model |
 | `~/.claude/settings.json` | hook + statusline entries merged in; session `model` set to your simple model (one-time backup at `settings.json.model-switcher.bak`) |
+| `~/.claude/CLAUDE.md` | a marker-delimited routing-policy block (`<!-- model-switcher:begin/end -->`) that makes delegation directives binding |
 
-If you already had a custom statusline, it is preserved: the installer records it as `statusline.wrap_command` and the cost statusline runs it first, appending the cost segment to its output.
+**Your existing setup is never clobbered.** Every touchpoint is merge-based and reversible:
+
+- `settings.json`: entries are merged, never overwritten; your previous `model` and `statusLine` are recorded in a manifest and restored on uninstall; one-time backup kept.
+- `CLAUDE.md`: if you don't have one, the installer creates it with just the policy block (and uninstall deletes it again). If you do, the block is appended after your content — a one-time backup is kept at `CLAUDE.md.model-switcher.bak`, re-installs update only the text between the markers, and uninstall removes only the block, leaving every byte of yours intact.
+- Custom statusline: preserved — the installer records it as `statusline.wrap_command` and the cost statusline runs it first, appending the cost segment to its output.
+- Your config and pricing (`config.json`) survive re-installs and uninstalls.
 
 Installer options:
 
@@ -131,6 +137,35 @@ Fill in `pricing_usd_per_mtok` — **$ per million tokens**, four rates per mode
 ```
 
 Prompts scoring at or above this (0–10, integer or float, clamped to 1–10) are delegated. Raise it if too much gets delegated, lower it for more Opus. Scoring signals: strong task verbs including inflections (refactor/refactoring, migrate/migrating, ...) and incident vocabulary (race condition, deadlock, memory leak, vulnerability, ...) weigh most, plus moderate domain terms, prompt length, numbered multi-step lists, code blocks, multiple file paths, and pasted stack traces. Negated verbs ("don't refactor") don't count; definitional questions ("what is an end-to-end test?") and short affirmations ("yes go ahead") are capped as simple. Slash commands, local-command output, and subagent contexts are never scored. Scoring reads at most the first 10 KB of a prompt, so huge pastes can't stall submission. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
+
+## When does it delegate?
+
+A prompt is routed to the heavy model when its complexity score reaches `complexity.threshold` (default 5). Real scored examples:
+
+| Score | Verdict | Prompt |
+|---|---|---|
+| 8/10 | COMPLEX | build a REST API with auth and database schema |
+| 6/10 | COMPLEX | review this codebase and tell me what is missing |
+| 6/10 | COMPLEX | fix the race condition in the payment processor |
+| 5/10 | COMPLEX | analyse the code and tell me what is missing |
+| 5/10 | COMPLEX | why does the app deadlock under load? |
+| 2/10 | simple | explain what a database migration is |
+| 1/10 | simple | fix the typo in the header |
+| 0/10 | simple | what does this function do? |
+| 0/10 | simple | yes go ahead |
+
+Strong task verbs carry the most weight (refactor, implement, migrate, build/create a, review, analyse, debug, investigate, audit, harden, profile — inflections like "migrating" count), along with incident vocabulary (race condition, deadlock, memory leak, crash, vulnerability). Domain terms (test, database, api, schema, security, fix, bug, ...) add a point each; numbered step lists, 150+ word prompts, code blocks, multiple file paths, and pasted stack traces push the score up. Capped back to simple: short pure questions with no task verb, definitional questions, short affirmations, negated verbs. Dry-run any prompt without spending tokens:
+
+```sh
+echo '{"prompt":"review this codebase and tell me what is missing","session_id":"test"}' \
+  | python3 ~/.claude/model-switcher/complexity_router.py
+```
+
+**What delegation looks like:** the statusline model name never changes — Claude Code has no per-prompt model switch. When a prompt is COMPLEX, Claude spawns the `heavy-task` subagent (your heavy model) and relays its answer; you'll see the delegation announced and an agent task running, and the session cost rise at the heavy model's rates.
+
+### How routing is enforced — and its limits
+
+Hooks cannot change a request's model, so routing rides on instructions to the model, enforced in two layers: the per-prompt directive injected by the hook (worded as mandatory policy), and a standing routing-policy block the installer adds to `~/.claude/CLAUDE.md` (system-prompt-level context, which models weight much more heavily than per-turn injections). This makes compliance near-universal, but it is still ultimately the model following instructions — a hard per-prompt guarantee is not possible on this platform. The statusline is your audit trail: a COMPLEX turn billed only at the cheap model's rates means a delegation was skipped.
 
 ## What you'll see
 
