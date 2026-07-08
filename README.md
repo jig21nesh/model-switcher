@@ -47,7 +47,9 @@ Some prompts need a stronger model:
 
 ## Demo
 
-<!-- TODO: add demo GIF at docs/demo.gif and embed it here -->
+![model-switcher demo — a complex prompt delegates to heavy-task-opus while the statusline tracks cost](docs/demo.gif)
+
+*Scripted replay of a real captured session (prompts, agent spawn, and costs are from live transcripts).*
 
 Example statusline:
 
@@ -445,7 +447,6 @@ Contributions are welcome, especially around:
 
 ## Roadmap
 
-- [ ] Add demo GIF
 - [ ] Add CSV export for cost summaries
 - [ ] Add per-project config override
 - [ ] Add a dry-run mode that only shows routing decisions
