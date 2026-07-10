@@ -117,7 +117,7 @@ cd model-switcher
 Then:
 
 1. Restart your Claude Code sessions (CLI and VS Code) — settings load at startup.
-2. Put your token rates into `~/.claude/model-switcher/config.json` (see [Configure pricing](#2-configure-pricing)).
+2. Verify the token rates in `~/.claude/model-switcher/config.json` against the official pricing pages (see [Configure pricing](#2-configure-pricing)).
 3. Try a simple prompt: `what does this function do?`
 4. Try a complex prompt: `refactor the auth module, migrate the schema and add tests` — Claude should announce it is delegating to `heavy-task-*`.
 5. Check the statusline cost output.
@@ -309,7 +309,7 @@ All configuration lives in `~/.claude/model-switcher/config.json`.
 
 ### 2. Configure pricing
 
-Fill in `pricing_usd_per_mtok` — **$ per million tokens**, four rates per model. Look up the current values at <https://claude.com/pricing> (model IDs and rates: <https://platform.claude.com/docs/en/about-claude/pricing>):
+`pricing_usd_per_mtok` ships pre-filled for the default models — **$ per million tokens**, four rates per model. Verify them against the current values at <https://claude.com/pricing> (model IDs and rates: <https://platform.claude.com/docs/en/about-claude/pricing>):
 
 ```json
 {
@@ -322,7 +322,7 @@ Fill in `pricing_usd_per_mtok` — **$ per million tokens**, four rates per mode
 ```
 
 > [!WARNING]
-> The numbers above are illustrative only — copy the current rates from the official pricing pages.
+> Model prices change — check the shipped rates against the official pricing pages before trusting the cost output.
 
 A model entry is used only when all four rates are numbers. Dated IDs like `claude-sonnet-5-20250929` match their base entry by prefix. Until at least one entry is complete, the statusline shows a pricing warning and Claude reminds you once per session.
 
