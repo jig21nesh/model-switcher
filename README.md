@@ -11,7 +11,7 @@
 
 `model-switcher` is an experimental Claude Code setup that scores every prompt locally before Claude sees it.
 
-Simple prompts stay on your cheaper session model, such as Sonnet. Complex prompts are delegated to a `heavy-task-*` subagent running your configured heavier model, such as Opus.
+Simple prompts stay on your cheaper session model, such as Sonnet. Complex prompts are delegated to a `heavy-task-*` subagent running your configured heavier model, such as Fable 5.
 
 After every response, the statusline shows the token cost of the current turn and the whole session, computed offline from the local Claude Code session transcript using your own pricing table.
 
@@ -61,11 +61,11 @@ Example complex prompt:
 
 ```text
 User:   refactor the auth module, migrate the schema and add tests
-Claude: Delegating this to the heavy-task-opus agent...
-        [heavy-task-opus(Refactor auth module and add tests) runs]
+Claude: Delegating this to the heavy-task-fable agent...
+        [heavy-task-fable(Refactor auth module and add tests) runs]
 ```
 
-When delegation happens, the statusline model name does not change — Claude Code has no hard per-prompt model switch. Instead, Claude spawns the configured `heavy-task-*` subagent (its name shows the model, e.g. `heavy-task-opus`) and relays its answer.
+When delegation happens, the statusline model name does not change — Claude Code has no hard per-prompt model switch. Instead, Claude spawns the configured `heavy-task-*` subagent (its name shows the model, e.g. `heavy-task-fable`) and relays its answer.
 
 ---
 
@@ -74,7 +74,7 @@ When delegation happens, the statusline model name does not change — Claude Co
 - Scores each prompt locally before Claude sees it
 - Keeps simple prompts on your configured session model
 - Delegates complex prompts to a `heavy-task-*` subagent
-- Names the subagent for the configured heavy model, for example `heavy-task-opus`, so the model is visible in the task line
+- Names the subagent for the configured heavy model, for example `heavy-task-fable`, so the model is visible in the task line
 - Tracks turn and session cost from the local transcript, including subagent sidechain usage
 - Uses your own pricing table — no network calls
 - Preserves an existing custom statusline if you already have one
@@ -265,7 +265,7 @@ sequenceDiagram
 | `~/.claude/model-switcher/cost_statusline.py` | Statusline command |
 | `~/.claude/model-switcher/config.json` | Your configuration — created from `config/config.example.json` if absent, never overwritten |
 | `~/.claude/model-switcher/installed.json` | Manifest of your pre-install `model`/`statusLine`/agent, used by uninstall |
-| `~/.claude/agents/heavy-task-<model>.md` | The subagent, named for and stamped with your configured complex model, e.g. `heavy-task-opus` |
+| `~/.claude/agents/heavy-task-<model>.md` | The subagent, named for and stamped with your configured complex model, e.g. `heavy-task-fable` |
 | `~/.claude/settings.json` | Hook and statusline entries merged in; session model set to your simple model unless `--skip-model` is used |
 | `~/.claude/CLAUDE.md` | Marker-delimited routing-policy block (`<!-- model-switcher:begin/end -->`) |
 
@@ -296,7 +296,7 @@ All configuration lives in `~/.claude/model-switcher/config.json`.
 ```json
 {
   "models": {
-    "complex": "opus",
+    "complex": "fable",
     "simple": "sonnet"
   }
 }
@@ -314,6 +314,7 @@ Fill in `pricing_usd_per_mtok` — **$ per million tokens**, four rates per mode
 ```json
 {
   "pricing_usd_per_mtok": {
+    "claude-fable-5":   { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_read": 1.00 },
     "claude-opus-4-8":  { "input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_read": 0.50 },
     "claude-sonnet-5":  { "input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30 }
   }
@@ -374,7 +375,7 @@ echo '{"prompt":"what does this function do?","session_id":"check"}' \
 echo '{"model":{"display_name":"Sonnet 5"}}' | python3 ~/.claude/model-switcher/cost_statusline.py
 ```
 
-In a live session: check the statusline at the bottom, give it a complex prompt — Claude should say it is delegating to `heavy-task-<model>` (e.g. `heavy-task-opus`) — and `/agents` should list the agent with your configured model.
+In a live session: check the statusline at the bottom, give it a complex prompt — Claude should say it is delegating to `heavy-task-<model>` (e.g. `heavy-task-fable`) — and `/agents` should list the agent with your configured model.
 
 ---
 

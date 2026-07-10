@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agents-dir", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--source", type=Path)
-    parser.add_argument("--model", default="opus")
+    parser.add_argument("--model", default="fable")
     args = parser.parse_args(argv)
 
     manifest = _load_json(args.manifest)

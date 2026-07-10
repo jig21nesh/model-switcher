@@ -93,7 +93,7 @@ cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/statusline/cost_statusline.
   "$REPO_DIR/config/claude-md-section.md" "$INSTALL_DIR/"
 [ -f "$CONFIG" ] || cp "$REPO_DIR/config/config.example.json" "$CONFIG"
 
-COMPLEX_MODEL="$(read_config_model complex opus)"
+COMPLEX_MODEL="$(read_config_model complex fable)"
 SIMPLE_MODEL="$(read_config_model simple sonnet)"
 
 AGENT_INFO=$(python3 "$REPO_DIR/scripts/generate_agent.py" install \
