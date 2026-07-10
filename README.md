@@ -474,9 +474,9 @@ Contributions are welcome, especially around:
 ## Roadmap
 
 - [ ] Add CSV export for cost summaries
-- [ ] Add per-project config override
+- [x] Add per-project config override — shipped in [v0.2.0](https://github.com/jig21nesh/model-switcher/releases/tag/v0.2.0)
 - [ ] Add a dry-run mode that only shows routing decisions
-- [ ] Publish first tagged release
+- [x] Publish first tagged release — [v0.1.0](https://github.com/jig21nesh/model-switcher/releases/tag/v0.1.0)
 
 ## Ideas to fork or extend
 
