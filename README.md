@@ -77,6 +77,7 @@ When delegation happens, the statusline model name does not change — Claude Co
 - Names the subagent for the configured heavy model, for example `heavy-task-fable`, so the model is visible in the task line
 - Tracks turn and session cost from the local transcript, including subagent sidechain usage
 - Uses your own pricing table — no network calls
+- Can be switched off globally or overridden per project, without uninstalling
 - Preserves an existing custom statusline if you already have one
 - Adds a marker-delimited routing policy block to `~/.claude/CLAUDE.md`
 
@@ -219,6 +220,7 @@ flowchart TD
     H -->|"score < threshold"| S["Answered in-session<br/>simple model"]
     H -->|"score >= threshold"| D["additionalContext:<br/>delegate to heavy-task"]
     H -->|"models not configured"| Q["Claude asks you to confirm<br/>models and saves config.json"]
+    H -->|"routing disabled<br/>(global or project override)"| S
 
     D --> A["heavy-task-* subagent<br/>configured heavy model"]
     A --> R[Result relayed to user]
@@ -337,6 +339,29 @@ A model entry is used only when all four rates are numbers. Dated IDs like `clau
 ```
 
 Prompts scoring at or above the threshold (0–10, integer or float, clamped to 1–10) are delegated. Raise it if too much gets delegated, lower it for more heavy-model routing. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
+
+### 4. Switch routing on and off
+
+```json
+{
+  "routing": {
+    "enabled": false
+  }
+}
+```
+
+With `routing.enabled` set to `false` the hook stays silent: no scoring, no delegation directives, no setup nags. The statusline and cost tracking are unaffected. Takes effect on your next prompt — no re-install needed. Absent or `true` means routing is on.
+
+Any project can override the switch and the threshold with a `.claude/model-switcher.json` in the project root:
+
+```json
+{
+  "routing": { "enabled": true },
+  "complexity": { "threshold": 7 }
+}
+```
+
+Only the `routing` and `complexity` sections can be overridden per project — `models` and pricing stay global, because the heavy-task agent is generated from the global config at install time. Typical uses: routing off globally but on for one expensive repo, or a higher threshold in a repo where most work is simple.
 
 ---
 
