@@ -3,6 +3,9 @@
     "complex": "fable",
     "simple": "sonnet"
   },
+  "routing": {
+    "enabled": true
+  },
   "complexity": {
     "threshold": 5
   },

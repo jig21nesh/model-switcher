@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 PRICING_URL = "https://claude.com/pricing"
 DEFAULT_THRESHOLD = 5
+# A project override is a small settings file; anything bigger is not one.
+PROJECT_CONFIG_MAX_BYTES = 64 * 1024
 # Scoring beyond this many characters adds no signal and regex work on huge pastes must stay off
 # the interactive path; truncation itself is treated as a length signal.
 SCORE_MAX_CHARS = 10_000
@@ -87,6 +89,46 @@ def load_config() -> dict:
         return config if isinstance(config, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def load_project_config(cwd: object) -> dict:
+    if not isinstance(cwd, str) or not cwd:
+        return {}
+    path = Path(cwd) / ".claude" / "model-switcher.json"
+    try:
+        if path.stat().st_size > PROJECT_CONFIG_MAX_BYTES:
+            logger.warning("project override too large, ignoring: %s", path)
+            return {}
+        override = json.loads(path.read_text(encoding="utf-8"))
+        return override if isinstance(override, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def merge_project_config(config: dict, override: dict) -> dict:
+    # Per-project overrides cover behavioural knobs only; models and pricing stay global because
+    # the heavy-task agent is generated from the global config at install time.
+    merged = dict(config)
+    for section in ("routing", "complexity"):
+        extra = override.get(section)
+        if not isinstance(extra, dict):
+            continue
+        base = merged.get(section)
+        combined = dict(base) if isinstance(base, dict) else {}
+        combined.update(extra)
+        merged[section] = combined
+    return merged
+
+
+def routing_enabled(config: dict) -> bool:
+    routing = config.get("routing")
+    if not isinstance(routing, dict):
+        return True
+    value = routing.get("enabled", True)
+    if isinstance(value, bool):
+        return value
+    logger.warning("invalid routing.enabled %r, routing stays enabled", value)
+    return True
 
 
 def _strong_hits(text: str) -> list[str]:
@@ -291,7 +333,10 @@ def run(stdin_text: str) -> str:
     # is meaningless and would waste the once-per-session nags on a command turn.
     if prompt.lstrip().startswith("/") or COMMAND_TAG_RE.search(prompt):
         return ""
-    context = build_context(prompt, str(payload.get("session_id", "")), load_config())
+    config = merge_project_config(load_config(), load_project_config(payload.get("cwd")))
+    if not routing_enabled(config):
+        return ""
+    context = build_context(prompt, str(payload.get("session_id", "")), config)
     if not context:
         return ""
     return json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}})

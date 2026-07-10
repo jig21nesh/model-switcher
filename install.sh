@@ -36,7 +36,7 @@ Options:
   -h, --help      Show this help and exit.
 
 Configuration:  $CLAUDE_DIR/model-switcher/config.json
-                (models.complex/simple, complexity.threshold, pricing_usd_per_mtok)
+                (models.complex/simple, routing.enabled, complexity.threshold, pricing_usd_per_mtok)
 Pricing rates:  https://claude.com/pricing
 Documentation:  https://github.com/jig21nesh/model-switcher
 
