@@ -93,7 +93,7 @@ cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/statusline/cost_statusline.
   "$REPO_DIR/config/claude-md-section.md" "$INSTALL_DIR/"
 [ -f "$CONFIG" ] || cp "$REPO_DIR/config/config.example.json" "$CONFIG"
 
-COMPLEX_MODEL="$(read_config_model complex opus)"
+COMPLEX_MODEL="$(read_config_model complex fable)"
 SIMPLE_MODEL="$(read_config_model simple sonnet)"
 
 AGENT_INFO=$(python3 "$REPO_DIR/scripts/generate_agent.py" install \
@@ -105,7 +105,7 @@ if [ "$SKIP_MODEL" -eq 0 ]; then SET_MODEL_ARGS=(--set-model "$SIMPLE_MODEL"); f
 
 python3 "$INSTALL_DIR/merge_settings.py" install \
   --settings "$SETTINGS" --install-dir "$INSTALL_DIR" --config "$CONFIG" --manifest "$MANIFEST" \
-  "${SET_MODEL_ARGS[@]}"
+  ${SET_MODEL_ARGS[@]+"${SET_MODEL_ARGS[@]}"}
 python3 "$INSTALL_DIR/manage_claude_md.py" install \
   --claude-md "$CLAUDE_DIR/CLAUDE.md" --block-file "$INSTALL_DIR/claude-md-section.md" \
   --manifest "$MANIFEST"

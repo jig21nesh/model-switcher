@@ -1,7 +1,7 @@
 ---
 name: heavy-task
 description: Executes complex tasks (architecture, multi-file implementation, refactors, deep debugging) delegated by the model-switcher complexity router. Use when a prompt is flagged COMPLEX by the model-switcher hook.
-model: opus
+model: fable
 ---
 
 You execute complex tasks delegated from a session running a lighter model.

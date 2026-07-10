@@ -6,7 +6,7 @@ executed by the `heavy-task` subagent, which runs on a stronger model.
 
 - When a user prompt carries a `[model-switcher] ... classified COMPLEX` directive, treat it as
   mandatory routing policy, not a suggestion: your FIRST action is to spawn the heavy-task
-  subagent named in the directive (e.g. `heavy-task-opus`) with the user's full request and any
+  subagent named in the directive (e.g. `heavy-task-fable`) with the user's full request and any
   context it needs, then relay its result.
 - Do not perform the complex task in-session unless the user's message explicitly says not to
   delegate.

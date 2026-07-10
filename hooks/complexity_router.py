@@ -155,7 +155,7 @@ def threshold_from(config: dict) -> float:
 
 def _heavy_agent_name(model: str) -> str:
     # Keep in sync with scripts/generate_agent.py: the installer stamps this name into the agent
-    # file so the model is visible in Claude Code's task line (e.g. heavy-task-opus).
+    # file so the model is visible in Claude Code's task line (e.g. heavy-task-fable).
     suffix = re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-")
     return f"heavy-task-{suffix}" if suffix else "heavy-task"
 
@@ -235,7 +235,7 @@ def build_context(prompt: str, session_id: str, config: dict) -> str:
         if not state.get("models_nagged"):
             parts.append(
                 "[model-switcher] Model routing is not configured. Ask the user to confirm which Claude "
-                "models to use for 'complex' tasks (suggest: opus) and 'simple' tasks (suggest: sonnet). "
+                "models to use for 'complex' tasks (suggest: fable) and 'simple' tasks (suggest: sonnet). "
                 f"Once confirmed, write their choices into the 'models' section of {home_dir() / 'config.json'} "
                 "and then continue with the user's request."
             )
