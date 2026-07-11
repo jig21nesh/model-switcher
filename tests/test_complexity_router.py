@@ -400,6 +400,26 @@ class TestProjectOverride:
         write_config(home, CONFIGURED)
         assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT, cwd=123))
 
+    def test_invalid_override_threshold_keeps_global_threshold(self, home, tmp_path_factory):
+        config = dict(CONFIGURED)
+        config["complexity"] = {"threshold": 8}
+        write_config(home, config)
+        project = write_project_config(tmp_path_factory.mktemp("proj"), {"complexity": {"threshold": "3"}})
+        # Scores 6 — above the hardcoded default of 5 but below the global 8: must stay silent.
+        assert router.run(hook_input("review this codebase and tell me what is missing", cwd=str(project))) == ""
+
+    def test_invalid_override_enabled_keeps_global_disabled(self, home, tmp_path_factory):
+        config = dict(CONFIGURED)
+        config["routing"] = {"enabled": False}
+        write_config(home, config)
+        project = write_project_config(tmp_path_factory.mktemp("proj"), {"routing": {"enabled": "true"}})
+        assert router.run(hook_input(COMPLEX_PROMPT, cwd=str(project))) == ""
+
+    def test_bool_threshold_in_override_dropped(self, home, tmp_path_factory):
+        write_config(home, CONFIGURED)
+        project = write_project_config(tmp_path_factory.mktemp("proj"), {"complexity": {"threshold": True}})
+        assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT, cwd=str(project)))
+
     def test_project_cannot_override_models(self, home, tmp_path_factory):
         write_config(home, CONFIGURED)
         project = write_project_config(

@@ -105,6 +105,14 @@ def load_project_config(cwd: object) -> dict:
         return {}
 
 
+# An override value that fails its type check is dropped so the global value stays in effect —
+# ADR-0003: override failures fall open to the global config, never to hardcoded defaults.
+_OVERRIDE_KEY_TYPES = {
+    ("routing", "enabled"): lambda v: isinstance(v, bool),
+    ("complexity", "threshold"): lambda v: not isinstance(v, bool) and isinstance(v, (int, float)),
+}
+
+
 def merge_project_config(config: dict, override: dict) -> dict:
     # Per-project overrides cover behavioural knobs only; models and pricing stay global because
     # the heavy-task agent is generated from the global config at install time.
@@ -115,7 +123,12 @@ def merge_project_config(config: dict, override: dict) -> dict:
             continue
         base = merged.get(section)
         combined = dict(base) if isinstance(base, dict) else {}
-        combined.update(extra)
+        for key, value in extra.items():
+            check = _OVERRIDE_KEY_TYPES.get((section, key))
+            if check is not None and not check(value):
+                logger.warning("invalid %s.%s in project override, keeping global value", section, key)
+                continue
+            combined[key] = value
         merged[section] = combined
     return merged
 
