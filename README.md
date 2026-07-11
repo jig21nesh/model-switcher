@@ -169,7 +169,7 @@ Scoring signals include:
 
 Capped back to simple: short pure questions with no task verb, definitional questions, short affirmations, and negated verbs (`don't refactor`).
 
-Ignored by scoring: slash commands, local command output, agent-relay messages, and subagent contexts. The router reads at most the first 10 KB of a prompt, so huge pastes cannot stall submission.
+Ignored by scoring: slash commands, local command output, agent-relay messages, and subagent contexts. The router reads at most the first 10 KB of a prompt, so huge pastes cannot stall submission — put your request *before* a large paste, because an ask that lands past the 10 KB cutoff is not scored and the prompt may route as simple.
 
 Dry-run any prompt without spending tokens:
 
@@ -363,6 +363,11 @@ Any project can override the switch and the threshold with a `.claude/model-swit
 
 Only the `routing` and `complexity` sections can be overridden per project — `models` and pricing stay global, because the heavy-task agent is generated from the global config at install time. Typical uses: routing off globally but on for one expensive repo, or a higher threshold in a repo where most work is simple.
 
+Two things to watch:
+
+- Values must be proper JSON types: `enabled` a bare `true`/`false`, `threshold` a number. An invalid value (e.g. `"enabled": "false"` as a quoted string) is ignored with a one-line stderr warning and the **global** setting stays in effect — a typo cannot silently flip routing.
+- The override is read from the session's working directory exactly (`<cwd>/.claude/model-switcher.json`). There is no parent-directory search, so a repo-root override does not apply to a session started in a subdirectory of that repo.
+
 ---
 
 ## What you will see
@@ -425,6 +430,21 @@ Re-run `./install.sh` — this regenerates the `heavy-task-*` agent and updates 
 ### I want my old setup back
 
 `./install.sh --uninstall` restores your previous statusline and session model from the manifest and removes the CLAUDE.md block. Your `config.json` is kept.
+
+---
+
+## Lifecycle verification
+
+Beyond the unit suite, the full session lifecycle was exercised end-to-end with simulated user sessions driving the real hook and statusline binaries in isolated sandboxes (`MODEL_SWITCHER_HOME`) — about 50 scenarios including hostile input, all passing with exit code 0:
+
+| Lifecycle phase | Coverage |
+|---|---|
+| Session start | Setup nags fire once (missing config, null pricing); slash-command first prompts preserve the nag; garbage stdin, path-traversal session IDs, and corrupted config all fail open; statusline always prints one line |
+| During session | 12-turn conversation mixing simple/complex/affirmation/negation/stack-trace prompts; subagent and command-tag contexts skipped; hostile shell-metacharacter prompts stay inert data; statusline turn/session math hand-verified incl. sidechains, streamed-duplicate dedupe, and unpriced-model flagging |
+| Resume / restart | Nag state survives resume and re-fires only for new sessions; stale state cleanup touches only its own files; corrupted state self-heals; config flips apply on the next prompt; resumed transcripts never double-count |
+| Routing switch | Global toggle and per-project overrides across every combination; malformed, oversized, injection, and wrong-typed overrides all fall open to the global config |
+
+Full scenario tables and findings: [docs/lifecycle-test-report.md](docs/lifecycle-test-report.md).
 
 ---
 
