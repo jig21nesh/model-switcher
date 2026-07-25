@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import analyze_history
+import complexity_router
 import update_pricing
 
 
@@ -72,6 +73,47 @@ def cmd_learn(args: argparse.Namespace) -> int:
     return analyze_history.main(forwarded)
 
 
+def cmd_explain(args: argparse.Namespace) -> int:
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        print("nothing to score", file=sys.stderr)
+        return 2
+
+    config = complexity_router.load_config()
+    classifier = {} if args.no_classifier else complexity_router.load_classifier()
+    detail = complexity_router.analyse_prompt(prompt, classifier)
+    threshold = complexity_router.threshold_from(config)
+
+    print(f'prompt: "{prompt[:120]}{"..." if len(prompt) > 120 else ""}"\n')
+    if detail["signals"]:
+        for name, points in detail["signals"]:
+            print(f"  {name:<44}{points:>+5}")
+    else:
+        print(f"  {'no built-in signals matched':<44}{0:>5}")
+    print(f"  {'':<44}{'-' * 5}")
+    print(f"  {'built-in score':<44}{detail['base']:>5}")
+
+    if classifier:
+        matched = sorted(detail["matched_terms"].items(), key=lambda item: -abs(item[1]))
+        shown = ", ".join(f"{term} {weight:+.2f}" for term, weight in matched[:8]) or "none matched"
+        print(f"  {'learned terms':<44}{detail['learned']:>+5.1f}")
+        print(f"    {shown}")
+    else:
+        print("  (no learned classifier — run: model-switcher learn)")
+    if detail["caps"]:
+        print(f"  capped to 2 by: {', '.join(detail['caps'])}")
+
+    score = detail["score"]
+    tier = complexity_router.select_tier(score, config)
+    if tier is None:
+        verdict = "answered in-session"
+    else:
+        model = config.get("models", {}).get(tier, "?")
+        verdict = f"{complexity_router.TIER_LABELS[tier]} -> {complexity_router.agent_name_for(model, tier)}"
+    print(f"\n  score {score}/10   threshold {threshold:g}   {verdict}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="model-switcher", description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -98,6 +140,16 @@ def build_parser() -> argparse.ArgumentParser:
     learn.add_argument("--threshold", type=float, default=None, help="threshold to measure against")
     learn.add_argument("--apply", action="store_true", help="promote the candidate to the live classifier")
     learn.set_defaults(handler=cmd_learn)
+
+    explain = subcommands.add_parser(
+        "explain",
+        help="show how a prompt scores and where it would route, without spending a token",
+    )
+    explain.add_argument("prompt", nargs="+", help="the prompt to score")
+    explain.add_argument(
+        "--no-classifier", action="store_true", help="score with the built-in signals only"
+    )
+    explain.set_defaults(handler=cmd_explain)
 
     return parser
 

@@ -565,3 +565,179 @@ class TestThreeTierDirectives:
         write_config(home, THREE_TIER)
         project = write_project_config(tmp_path / "proj", {"routing": {"tiers": "three"}})
         assert "mid-task-sonnet" in router.run(hook_input(MODERATE_PROMPT, cwd=str(project)))
+
+
+def classifier_file(home, terms, max_adjustment=3.0, schema_version=1):
+    payload = {"schema_version": schema_version, "scoring": {"terms": terms}}
+    if max_adjustment is not None:
+        payload["scoring"]["max_adjustment"] = max_adjustment
+    (home / "classifier.json").write_text(json.dumps(payload))
+    return payload
+
+
+class TestClassifierTokenizer:
+    def test_matches_the_documented_rules(self):
+        assert router.classifier_terms("Refactor the AUTH-module now!") == {
+            "refactor", "the", "auth-module", "now"
+        }
+
+    def test_deduplicates(self):
+        assert router.classifier_terms("migrate migrate") == {"migrate"}
+
+    @pytest.mark.parametrize("text,absent", [("a bc", "bc"), ("x" * 30, "x" * 30)])
+    def test_drops_tokens_outside_the_length_window(self, text, absent):
+        assert absent not in router.classifier_terms(text)
+
+    def test_ignores_text_past_the_scoring_limit(self):
+        assert "needleterm" not in router.classifier_terms("x" * 10_000 + " needleterm")
+
+    def test_every_term_the_producer_can_emit_is_findable_by_the_consumer(self):
+        """The artifact is portable only if both halves tokenize compatibly."""
+        import analyze_history
+
+        samples = [
+            "refactor the auth-module and migrate the schema",
+            "Fix the real-time pipeline; see src/app.py:42 (urgent!)",
+            "ensure end2end coverage — don't skip the k8s bits",
+            "MIGRATE\tthe\ndatabase   now",
+        ]
+        for sample in samples:
+            produced = analyze_history.terms_in(sample)
+            consumed = router.classifier_terms(sample)
+            assert produced <= consumed, f"producer emitted terms the router cannot match: {sample}"
+
+
+class TestLearnedAdjustment:
+    def test_sums_matched_terms(self):
+        adjustment, matched = router.learned_adjustment("refactor the api", {"terms": {"refactor": 0.5}})
+        assert adjustment == 0.5 and matched == {"refactor": 0.5}
+
+    def test_counts_a_repeated_term_once(self):
+        adjustment, _ = router.learned_adjustment("api api api", {"terms": {"api": 0.5}})
+        assert adjustment == 0.5
+
+    def test_is_clamped_by_the_artifacts_own_limit(self):
+        classifier = {"terms": {f"term{i}": 1.5 for i in range(10)}, "max_adjustment": 1.0}
+        adjustment, _ = router.learned_adjustment(" ".join(classifier["terms"]), classifier)
+        assert adjustment == 1.0
+
+    def test_is_clamped_in_the_negative_direction(self):
+        classifier = {"terms": {f"term{i}": -1.5 for i in range(10)}, "max_adjustment": 2.0}
+        adjustment, _ = router.learned_adjustment(" ".join(classifier["terms"]), classifier)
+        assert adjustment == -2.0
+
+    def test_an_empty_classifier_contributes_nothing(self):
+        assert router.learned_adjustment("refactor", {"terms": {}}) == (0.0, {})
+
+
+class TestLoadClassifier:
+    def test_loads_a_valid_artifact(self, home):
+        classifier_file(home, {"refactor": 0.8})
+        assert router.load_classifier()["terms"] == {"refactor": 0.8}
+
+    def test_absent_file_is_not_an_error(self, home):
+        assert router.load_classifier() == {}
+
+    @pytest.mark.parametrize("body", ["{ not json", "[]", '"text"', "null", "{}"])
+    def test_malformed_artifacts_are_ignored(self, home, body):
+        (home / "classifier.json").write_text(body)
+        assert router.load_classifier() == {}
+
+    def test_an_unknown_schema_version_is_ignored(self, home):
+        classifier_file(home, {"refactor": 0.8}, schema_version=99)
+        assert router.load_classifier() == {}
+
+    @pytest.mark.parametrize("scoring", [None, "terms", {"terms": "nope"}, {"terms": []}, {}])
+    def test_a_malformed_scoring_block_is_ignored(self, home, scoring):
+        (home / "classifier.json").write_text(json.dumps({"schema_version": 1, "scoring": scoring}))
+        assert router.load_classifier() == {}
+
+    def test_an_oversized_artifact_is_refused(self, home):
+        padding = "x" * (router.CLASSIFIER_MAX_BYTES + 1)
+        (home / "classifier.json").write_text(
+            json.dumps({"schema_version": 1, "pad": padding, "scoring": {"terms": {"refactor": 1}}})
+        )
+        assert router.load_classifier() == {}
+
+    def test_term_count_is_capped(self, home, monkeypatch):
+        monkeypatch.setattr(router, "CLASSIFIER_MAX_TERMS", 5)
+        classifier_file(home, {f"term{i:03d}": 0.5 for i in range(50)})
+        assert len(router.load_classifier()["terms"]) == 5
+
+    @pytest.mark.parametrize(
+        "term", ["../../etc/passwd", "rm -rf /", "TERM", "a", "x" * 40, "9lives", "a b"]
+    )
+    def test_implausible_terms_are_dropped(self, home, term):
+        classifier_file(home, {term: 0.9, "refactor": 0.5})
+        assert router.load_classifier()["terms"] == {"refactor": 0.5}
+
+    @pytest.mark.parametrize("weight", [True, "0.5", None, [1], {"w": 1}])
+    def test_unusable_weights_are_dropped(self, home, weight):
+        classifier_file(home, {"broken": weight, "refactor": 0.5})
+        assert router.load_classifier()["terms"] == {"refactor": 0.5}
+
+    @pytest.mark.parametrize("limit", [0, -1, 99, True, "3", None])
+    def test_an_unusable_limit_falls_back_to_the_hard_ceiling(self, home, limit):
+        classifier_file(home, {"refactor": 0.5}, max_adjustment=limit)
+        assert router.load_classifier()["max_adjustment"] == router.CLASSIFIER_MAX_ADJUSTMENT
+
+    def test_an_artifact_cannot_raise_its_own_ceiling(self, home):
+        classifier_file(home, {"refactor": 0.5}, max_adjustment=1000)
+        assert router.load_classifier()["max_adjustment"] == router.CLASSIFIER_MAX_ADJUSTMENT
+
+    def test_regex_metacharacters_in_a_term_are_matched_literally(self, home):
+        # Terms come from prompt text and must never be compiled as patterns.
+        classifier_file(home, {"a-b": 1.0})
+        loaded = router.load_classifier()
+        assert router.learned_adjustment("axb", loaded)[0] == 0.0
+        assert router.learned_adjustment("a-b", loaded)[0] == 1.0
+
+
+class TestScoringWithClassifier:
+    def test_scoring_without_a_classifier_is_unchanged(self):
+        assert router.score_prompt(COMPLEX_PROMPT) == router.score_prompt(COMPLEX_PROMPT, None)
+
+    def test_learned_terms_can_lift_a_prompt_over_the_threshold(self):
+        prompt = "ensure the deployment pipeline works"
+        base = router.score_prompt(prompt)
+        lifted = router.score_prompt(prompt, {"terms": {"ensure": 1.2, "deployment": 1.0}})
+        assert lifted > base
+
+    def test_learned_terms_can_push_a_prompt_down(self):
+        prompt = "review the config"
+        base = router.score_prompt(prompt)
+        assert router.score_prompt(prompt, {"terms": {"review": -1.5, "config": -1.5}}) < base
+
+    def test_caps_still_win_over_learned_weights(self):
+        # A lookup must stay a lookup no matter what the artifact says.
+        terms = {word: 1.5 for word in ("what", "does", "this", "function")}
+        assert router.score_prompt("what does this function do?", {"terms": terms}) <= 2
+
+    def test_analysis_records_why(self):
+        detail = router.analyse_prompt(COMPLEX_PROMPT, {"terms": {"auth": 0.5}})
+        assert detail["base"] > 0 and detail["signals"]
+        assert detail["matched_terms"] == {"auth": 0.5}
+        assert detail["score"] == router.score_prompt(COMPLEX_PROMPT, {"terms": {"auth": 0.5}})
+
+    def test_analysis_reports_the_caps_it_applied(self):
+        assert router.analyse_prompt("yes go ahead")["caps"] == ["affirmation"]
+
+
+class TestClassifierEndToEnd:
+    def test_a_learned_artifact_changes_routing(self, home):
+        write_config(home, CONFIGURED)
+        prompt = "ensure the deployment pipeline works"
+        assert router.run(hook_input(prompt)) == ""
+        classifier_file(home, {"ensure": 1.5, "deployment": 1.5, "pipeline": 1.5})
+        assert "heavy-task" in router.run(hook_input(prompt))
+
+    def test_a_corrupt_artifact_never_blocks_a_prompt(self, home):
+        write_config(home, CONFIGURED)
+        (home / "classifier.json").write_text("{ corrupt")
+        assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT))
+        assert router.run(hook_input("what does this do?")) == ""
+
+    def test_a_hostile_artifact_cannot_force_delegation_of_a_lookup(self, home):
+        write_config(home, CONFIGURED)
+        classifier_file(home, {word: 1.5 for word in ("what", "does", "this", "function", "the")})
+        assert router.run(hook_input("what does this function do?")) == ""

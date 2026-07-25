@@ -206,7 +206,32 @@ to consume it: [`docs/classifier-schema.md`](docs/classifier-schema.md).
 > the weights optimise for *became work*, which correlates with *needed the better model* without
 > being identical to it. Review the candidate before applying it.
 
-Dry-run any prompt without spending tokens:
+### Ask why a prompt routes the way it does
+
+`explain` scores a prompt and shows its working, without spending a token:
+
+```sh
+./bin/model-switcher explain "ensure the deployment pipeline works end2end"
+```
+
+```text
+  domain terms (pipeline, deployment)            +2
+                                              -----
+  built-in score                                  2
+  learned terms                                +2.0
+    ensure +1.16, end2end +0.88
+
+  score 4/10   threshold 5   MODERATE -> mid-task-sonnet
+```
+
+Add `--no-classifier` to see the built-in signals alone. The explanation comes from the same code
+path that does the routing, so it cannot disagree with what actually happens.
+
+Learned weights are bounded: they can move a score by at most ±3, and the lookup caps are applied
+*after* them, so no weight table — however skewed or hand-edited — can turn a short question into a
+delegation. A missing or corrupt classifier is ignored and routing proceeds as if it were not there.
+
+Or run the hook exactly as Claude Code does:
 
 ```sh
 echo '{"prompt":"review this codebase and tell me what is missing","session_id":"test"}' \
@@ -591,7 +616,8 @@ Contributions are welcome, especially around:
 
 - [ ] Add CSV export for cost summaries
 - [x] Add per-project config override — shipped in [v0.2.0](https://github.com/jig21nesh/model-switcher/releases/tag/v0.2.0)
-- [ ] Add a dry-run mode that only shows routing decisions
+- [x] Add a dry-run mode that only shows routing decisions — `model-switcher explain`
+- [x] Learn routing weights from your own history — `model-switcher learn`
 - [x] Publish first tagged release — [v0.1.0](https://github.com/jig21nesh/model-switcher/releases/tag/v0.1.0)
 
 ## Ideas to fork or extend

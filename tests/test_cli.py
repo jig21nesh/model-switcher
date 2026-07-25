@@ -156,3 +156,69 @@ class TestLearnCommand:
         monkeypatch.setattr(cli.analyze_history, "main", lambda argv: seen.setdefault("argv", argv) and 0)
         cli.main(["learn"])
         assert "--apply" not in seen["argv"] and "--max-sessions" not in seen["argv"]
+
+
+class TestExplainCommand:
+    def _configure(self, home, threshold=5):
+        (home / "config.json").write_text(
+            json.dumps({"models": {"complex": "fable", "simple": "sonnet"},
+                        "complexity": {"threshold": threshold}})
+        )
+
+    def test_shows_signals_and_the_routing_verdict(self, home, capsys):
+        self._configure(home)
+        assert cli.main(["explain", "refactor", "the", "auth", "module"]) == 0
+        out = capsys.readouterr().out
+        assert "task verbs" in out and "heavy-task-fable" in out and "COMPLEX" in out
+
+    def test_reports_an_in_session_prompt(self, home, capsys):
+        self._configure(home)
+        cli.main(["explain", "what does this function do?"])
+        out = capsys.readouterr().out
+        assert "answered in-session" in out and "capped to 2 by" in out
+
+    def test_says_when_no_built_in_signal_matched(self, home, capsys):
+        self._configure(home)
+        cli.main(["explain", "hmm"])
+        assert "no built-in signals matched" in capsys.readouterr().out
+
+    def test_prompts_for_a_classifier_when_none_exists(self, home, capsys):
+        self._configure(home)
+        cli.main(["explain", "refactor the module"])
+        assert "model-switcher learn" in capsys.readouterr().out
+
+    def test_shows_matched_learned_terms(self, home, capsys):
+        self._configure(home)
+        (home / "classifier.json").write_text(
+            json.dumps({"schema_version": 1, "scoring": {"terms": {"ensure": 1.2}, "max_adjustment": 3.0}})
+        )
+        cli.main(["explain", "ensure the pipeline works"])
+        out = capsys.readouterr().out
+        assert "learned terms" in out and "ensure +1.20" in out
+
+    def test_no_classifier_flag_scores_with_built_ins_only(self, home, capsys):
+        self._configure(home)
+        (home / "classifier.json").write_text(
+            json.dumps({"schema_version": 1, "scoring": {"terms": {"ensure": 1.2}}})
+        )
+        cli.main(["explain", "--no-classifier", "ensure the pipeline works"])
+        assert "model-switcher learn" in capsys.readouterr().out
+
+    def test_reports_the_middle_tier(self, home, capsys):
+        (home / "config.json").write_text(json.dumps({
+            "models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"},
+            "complexity": {"threshold": 5, "standard_threshold": 1},
+        }))
+        cli.main(["explain", "fix the api config"])
+        out = capsys.readouterr().out
+        assert "MODERATE" in out and "mid-task-sonnet" in out
+
+    def test_rejects_an_empty_prompt(self, home, capsys):
+        self._configure(home)
+        assert cli.main(["explain", "   "]) == 2
+        assert "nothing to score" in capsys.readouterr().err
+
+    def test_truncates_a_very_long_prompt_in_the_echo(self, home, capsys):
+        self._configure(home)
+        cli.main(["explain", "refactor " * 200])
+        assert "..." in capsys.readouterr().out
