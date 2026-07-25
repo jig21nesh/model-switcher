@@ -252,10 +252,16 @@ model-switcher explain "ensure the deployment pipeline works end2end"
     ensure +1.16, end2end +0.88
 
   score 4/10   threshold 5   MODERATE -> mid-task-sonnet
+
+  routing ladder (3 tiers)
+     score < 3               simple    haiku         answered in-session
+  -> 3 <= score < 5          moderate  sonnet        mid-task-sonnet
+     score >= 5              complex   fable         heavy-task-fable
 ```
 
 Add `--no-classifier` to see the built-in signals alone. The explanation comes from the same code
-path that does the routing, so it cannot disagree with what actually happens.
+path that does the routing, so it cannot disagree with what actually happens — and the ladder
+underneath shows the other bands, so you can see what a slightly harder prompt would have done.
 
 Learned weights are bounded: they can move a score by at most ±3, and the lookup caps are applied
 *after* them, so no weight table — however skewed or hand-edited — can turn a short question into a
@@ -408,11 +414,32 @@ All configuration lives in `~/.claude/model-switcher/config.json`.
 }
 ```
 
+Three models can be configured, from dearest to cheapest:
+
+| Key | Role | Runs on |
+|---|---|---|
+| `complex` | the expensive tier — hardest prompts | `heavy-task-*` subagent |
+| `standard` | the middle tier, **optional** | `mid-task-*` subagent |
+| `simple` | the cheap tier — everything else | your session itself |
+
 - Aliases (`opus`, `sonnet`, `haiku`, `fable`) or full model IDs (`claude-opus-4-8`) are accepted.
 - `complex` is the model the `heavy-task-*` agent runs on. **After changing it, re-run `./install.sh`** so the agent file is regenerated (and renamed for the new model).
 - `simple` is the session model the installer writes into `settings.json`.
-- `standard` is optional and enables a **third tier** — see below. Leave it `null` for the two-tier default.
+- `standard` is optional and enables the **third tier** — see below. Leave it `null` for the two-tier default.
 - If `complex` or `simple` is missing or `null`, Claude asks you to confirm models at the start of your next prompt and saves your answer here.
+
+Whatever you set, `model-switcher tiers` prints the ladder your config actually produces:
+
+```text
+  routing ladder (3 tiers)
+     score < 3               simple    haiku         answered in-session
+     3 <= score < 5          moderate  sonnet        mid-task-sonnet
+     score >= 5              complex   fable         heavy-task-fable
+```
+
+The installer prints the same ladder when it finishes, and `explain` prints it with `->` against
+the band your prompt landed in. All three come from one function, so what you are shown is what
+the router will do.
 
 ### 1a. Optional: add a middle tier
 
@@ -434,7 +461,7 @@ middle band:
 | below 3 | answered in-session on `simple` |
 
 **Re-run `./install.sh` after adding it** — that generates the second agent. Removing
-`models.standard` and re-running deletes it again.
+`models.standard` and re-running deletes it again. Check the result with `model-switcher tiers`.
 
 `routing.tiers` controls this explicitly: `"auto"` (the default — three tiers when `models.standard`
 is valid, two otherwise), or a literal `2`/`3`. A project can drop to two tiers with

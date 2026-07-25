@@ -258,3 +258,60 @@ class TestUninstallCommand:
         cli.main(["uninstall", "--yes", "--claude-dir", str(tmp_path / "elsewhere")])
         argv = called[0]
         assert argv[argv.index("--claude-dir") + 1] == str(tmp_path / "elsewhere")
+
+
+THREE_TIER = {
+    "models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"},
+    "complexity": {"threshold": 5, "standard_threshold": 3},
+}
+
+
+class TestTiersCommand:
+    def _write(self, home, config):
+        path = home / "config.json"
+        path.write_text(json.dumps(config))
+        return path
+
+    def test_shows_every_band_with_its_model_and_destination(self, home, capsys):
+        self._write(home, THREE_TIER)
+        assert cli.main(["tiers"]) == 0
+        out = capsys.readouterr().out
+        assert "3 tiers" in out
+        assert "score < 3" in out and "haiku" in out and "answered in-session" in out
+        assert "3 <= score < 5" in out and "mid-task-sonnet" in out
+        assert "score >= 5" in out and "heavy-task-fable" in out
+
+    def test_a_two_tier_config_says_how_to_add_the_middle_one(self, home, capsys):
+        self._write(home, {"models": {"complex": "opus", "simple": "sonnet"}})
+        assert cli.main(["tiers"]) == 0
+        out = capsys.readouterr().out
+        assert "2 tiers" in out and "models.standard" in out and "mid-task" not in out
+
+    def test_reads_an_explicit_config_path(self, home, tmp_path, capsys):
+        elsewhere = tmp_path / "other.json"
+        elsewhere.write_text(json.dumps(THREE_TIER))
+        assert cli.main(["tiers", "--config", str(elsewhere)]) == 0
+        assert "mid-task-sonnet" in capsys.readouterr().out
+
+    def test_reports_a_missing_config_rather_than_crashing(self, home, capsys):
+        assert cli.main(["tiers"]) == 2
+        assert "run ./install.sh first" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("body", ["{not json", '"a string"', "[1, 2]", ""])
+    def test_survives_an_unusable_config(self, home, capsys, body):
+        (home / "config.json").write_text(body)
+        assert cli.main(["tiers"]) == 2
+        assert capsys.readouterr().err.strip()
+
+    def test_explain_ends_with_the_ladder_and_marks_where_the_prompt_landed(self, home, capsys):
+        self._write(home, THREE_TIER)
+        assert cli.main(["explain", "refactor the auth module and migrate the schema"]) == 0
+        lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+        marked = [line for line in lines if line.startswith("  ->")]
+        assert len(marked) == 1 and "heavy-task-fable" in marked[0]
+
+    def test_explain_marks_the_in_session_band_for_a_simple_prompt(self, home, capsys):
+        self._write(home, THREE_TIER)
+        cli.main(["explain", "what does this do?"])
+        marked = [line for line in capsys.readouterr().out.splitlines() if line.startswith("  ->")]
+        assert len(marked) == 1 and "answered in-session" in marked[0]

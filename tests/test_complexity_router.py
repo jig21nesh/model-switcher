@@ -741,3 +741,59 @@ class TestClassifierEndToEnd:
         write_config(home, CONFIGURED)
         classifier_file(home, {word: 1.5 for word in ("what", "does", "this", "function", "the")})
         assert router.run(hook_input("what does this function do?")) == ""
+
+
+class TestRoutingLadder:
+    THREE = {
+        "models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"},
+        "complexity": {"threshold": 5, "standard_threshold": 3},
+    }
+
+    def test_a_three_tier_config_produces_three_contiguous_bands(self):
+        rungs = router.routing_ladder(self.THREE)
+        assert [rung["band"] for rung in rungs] == [
+            "score < 3", "3 <= score < 5", "score >= 5",
+        ]
+        assert [rung["tier"] for rung in rungs] == [None, "standard", "complex"]
+
+    def test_each_band_names_the_model_that_serves_it(self):
+        rungs = router.routing_ladder(self.THREE)
+        assert [rung["model"] for rung in rungs] == ["haiku", "sonnet", "fable"]
+        assert [rung["destination"] for rung in rungs] == [
+            "answered in-session", "mid-task-sonnet", "heavy-task-fable",
+        ]
+
+    def test_a_two_tier_config_has_no_middle_band(self):
+        rungs = router.routing_ladder({"models": {"complex": "opus", "simple": "sonnet"}})
+        assert len(rungs) == 2
+        assert [rung["band"] for rung in rungs] == ["score < 5", "score >= 5"]
+
+    def test_the_ladder_agrees_with_select_tier_at_every_score(self):
+        # The whole point of one shared description: what a user is shown must be what runs.
+        for config in (self.THREE, {"models": {"complex": "opus", "simple": "sonnet"}}):
+            rungs = router.routing_ladder(config)
+            for score in range(0, 11):
+                tier = router.select_tier(score, config)
+                expected = next(rung for rung in reversed(rungs) if _in_band(score, rung, config))
+                assert expected["tier"] == tier, f"score {score} in {config}"
+
+    def test_an_overlapping_standard_threshold_still_yields_ordered_bands(self):
+        config = {**self.THREE, "complexity": {"threshold": 5, "standard_threshold": 9}}
+        rungs = router.routing_ladder(config)
+        assert [rung["band"] for rung in rungs] == ["score < 4", "4 <= score < 5", "score >= 5"]
+
+    def test_a_missing_model_is_reported_rather_than_guessed(self):
+        rungs = router.routing_ladder({"models": {"complex": "fable"}})
+        assert rungs[0]["model"] == "(unset)" and rungs[0]["destination"] == "answered in-session"
+
+    @pytest.mark.parametrize("config", [{}, {"models": None}, {"models": {}}, {"complexity": "nope"}])
+    def test_never_raises_on_a_malformed_config(self, config):
+        assert len(router.routing_ladder(config)) >= 2
+
+
+def _in_band(score, rung, config):
+    if rung["tier"] == "complex":
+        return score >= router.threshold_from(config)
+    if rung["tier"] == "standard":
+        return score >= router.standard_threshold_from(config)
+    return True

@@ -112,6 +112,40 @@ def cmd_explain(args: argparse.Namespace) -> int:
         model = config.get("models", {}).get(tier, "?")
         verdict = f"{complexity_router.TIER_LABELS[tier]} -> {complexity_router.agent_name_for(model, tier)}"
     print(f"\n  score {score}/10   threshold {threshold:g}   {verdict}")
+    print()
+    print_ladder(config, highlight=tier)
+    return 0
+
+
+def print_ladder(config: dict, highlight: str | None = None, marked: bool = True) -> None:
+    """Show every score band and the model that serves it.
+
+    `highlight` is the tier a just-scored prompt landed in; `marked` is False when there is no
+    prompt in play, so the installer does not print a column of blank markers.
+    """
+    rungs = complexity_router.routing_ladder(config)
+    print(f"  routing ladder ({len(rungs)} tiers)")
+    for rung in rungs:
+        marker = "->" if marked and rung["tier"] == highlight else "  "
+        print(f"  {marker} {rung['band']:<24}{rung['label']:<10}{rung['model']:<14}{rung['destination']}")
+    if len(rungs) == 2:
+        print('     add a middle tier with: models.standard + complexity.standard_threshold')
+
+
+def cmd_tiers(args: argparse.Namespace) -> int:
+    target = args.config or config_path()
+    if not target.exists():
+        print(f"no config at {target} — run ./install.sh first", file=sys.stderr)
+        return 2
+    try:
+        config = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"cannot read {target}: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(config, dict):
+        print(f"{target} is not a JSON object", file=sys.stderr)
+        return 2
+    print_ladder(config, marked=False)
     return 0
 
 
@@ -166,6 +200,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-classifier", action="store_true", help="score with the built-in signals only"
     )
     explain.set_defaults(handler=cmd_explain)
+
+    tiers = subcommands.add_parser(
+        "tiers",
+        help="show the score bands your config produces and which model serves each",
+    )
+    tiers.add_argument("--config", type=Path, default=None, help="config.json to read (default: your install)")
+    tiers.set_defaults(handler=cmd_tiers)
 
     remove = subcommands.add_parser(
         "uninstall",

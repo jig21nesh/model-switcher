@@ -367,6 +367,34 @@ def select_tier(score: float, config: dict) -> str | None:
     return None
 
 
+def routing_ladder(config: dict) -> list[dict]:
+    """The score bands a config produces, cheapest first, with the model that serves each.
+
+    One description of the ladder, shared by `explain` and the installer, so what a user is
+    shown at install time cannot drift from what the router will actually do. Bands are
+    half-open and written out in full: a lone "threshold 5" says nothing about where a middle
+    tier begins, which is why a three-tier config was hard to verify by eye.
+    """
+    models = config.get("models")
+    threshold = threshold_from(config)
+    rungs: list[dict] = []
+    if tiers_configured(config) == 3:
+        standard = standard_threshold_from(config)
+        rungs.append({"tier": None, "band": f"score < {standard:g}"})
+        rungs.append({"tier": "standard", "band": f"{standard:g} <= score < {threshold:g}"})
+    else:
+        rungs.append({"tier": None, "band": f"score < {threshold:g}"})
+    rungs.append({"tier": "complex", "band": f"score >= {threshold:g}"})
+
+    for rung in rungs:
+        tier = rung["tier"]
+        model = _valid_model(models, tier or "simple")
+        rung["label"] = TIER_LABELS.get(tier, "SIMPLE").lower()
+        rung["model"] = model or "(unset)"
+        rung["destination"] = agent_name_for(model, tier) if tier and model else "answered in-session"
+    return rungs
+
+
 def pricing_configured(config: dict) -> bool:
     pricing = config.get("pricing_usd_per_mtok")
     if not isinstance(pricing, dict):
