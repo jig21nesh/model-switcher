@@ -76,6 +76,30 @@ class TestScorePrompt:
         assert 0 <= router.score_prompt("word " * 200_000) <= 10
 
 
+class TestFinalScore:
+    """The scoring tail, shared with `explain` so counterfactuals cannot drift from routing."""
+
+    def test_adds_the_learned_adjustment_to_the_built_in_score(self):
+        assert router.final_score(4, 1.4, []) == 5
+
+    def test_rounds_to_a_whole_score(self):
+        assert router.final_score(4, 0.4, []) == 4
+
+    def test_a_cap_wins_over_everything_above_it(self):
+        assert router.final_score(9, 3.0, ["short question"]) == router.CAPPED_SCORE
+
+    def test_a_cap_never_raises_a_lower_score(self):
+        assert router.final_score(0, 0.0, ["affirmation"]) == 0
+
+    def test_clamped_to_the_ten_point_scale(self):
+        assert router.final_score(40, 3.0, []) == 10
+        assert router.final_score(0, -9.0, []) == 0
+
+    def test_agrees_with_analyse_prompt(self):
+        detail = router.analyse_prompt("refactor the auth module", {"terms": {"module": 1.0}})
+        assert detail["score"] == router.final_score(detail["base"], detail["learned"], detail["caps"])
+
+
 class TestRun:
     def test_complex_prompt_emits_delegation_directive(self, home):
         write_config(home, CONFIGURED)

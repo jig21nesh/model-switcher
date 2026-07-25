@@ -200,12 +200,12 @@ class TestExplainCommand:
         cli.main(["explain", "refactor the module"])
         assert "model-switcher learn" in capsys.readouterr().out
 
-    def test_shows_matched_learned_terms(self, home, capsys):
+    def test_shows_matched_learned_terms(self, home, capsys, tmp_path):
         self._configure(home)
         (home / "classifier.json").write_text(
             json.dumps({"schema_version": 1, "scoring": {"terms": {"ensure": 1.2}, "max_adjustment": 3.0}})
         )
-        cli.main(["explain", "ensure the pipeline works"])
+        cli.main(["explain", "--transcripts", str(tmp_path / "none"), "ensure the pipeline works"])
         out = capsys.readouterr().out
         assert "learned terms" in out and "ensure +1.20" in out
 
@@ -235,6 +235,159 @@ class TestExplainCommand:
         self._configure(home)
         cli.main(["explain", "refactor " * 200])
         assert "..." in capsys.readouterr().out
+
+
+CLASSIFIER = {
+    "schema_version": 1,
+    "generated_at": "2026-07-25T03:39:15+00:00",
+    "generator": "model-switcher/analyze_history",
+    "corpus": {"sessions": 105, "prompts": 2143, "heavy": 544, "light": 1599},
+    "scoring": {"max_adjustment": 3.0, "terms": {"naplan": -0.9, "migrate": 0.8}},
+}
+
+
+def write_classifier(directory, terms=None, name="classifier.json"):
+    data = json.loads(json.dumps(CLASSIFIER))
+    if terms is not None:
+        data["scoring"]["terms"] = terms
+    path = directory / name
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def write_transcripts(root, prompts_by_project):
+    """One transcript per project, every prompt observable enough to have been trained on."""
+    for project, prompts in prompts_by_project.items():
+        directory = root / project
+        directory.mkdir(parents=True, exist_ok=True)
+        records = []
+        for text in prompts:
+            records.append({"type": "user", "sessionId": project, "message": {"content": text}})
+            records.append({
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "name": "Read"}] * 14,
+                            "usage": {"output_tokens": 500}},
+            })
+        (directory / f"{project}.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+        )
+    return root
+
+
+class TestExplainDecisionBoundary:
+    def _configure(self, home, threshold=5):
+        (home / "config.json").write_text(
+            json.dumps({"models": {"complex": "fable", "simple": "sonnet"},
+                        "complexity": {"threshold": threshold}})
+        )
+
+    def test_reports_how_close_an_in_session_prompt_was(self, home, capsys, tmp_path):
+        self._configure(home)
+        cli.main(["explain", "--transcripts", str(tmp_path / "none"), "add a retry to the api client"])
+        out = capsys.readouterr().out
+        assert "decision boundary" in out and "short of the COMPLEX threshold (5)" in out
+        assert "what would flip it" in out
+
+    def test_reports_what_carried_a_routed_prompt(self, home, capsys, tmp_path):
+        self._configure(home)
+        cli.main([
+            "explain", "--transcripts", str(tmp_path / "none"),
+            "refactor the auth module and migrate the schema across the whole codebase",
+        ])
+        out = capsys.readouterr().out
+        assert "what carried it there" in out and "without task verbs" in out
+
+    def test_keeps_the_existing_output_and_the_ladder(self, home, capsys, tmp_path):
+        self._configure(home)
+        cli.main(["explain", "--transcripts", str(tmp_path / "none"), "refactor the auth module"])
+        out = capsys.readouterr().out
+        assert out.index("built-in score") < out.index("decision boundary") < out.index("routing ladder")
+
+    def test_marks_a_term_that_only_one_project_ever_used(self, home, capsys, tmp_path):
+        self._configure(home)
+        write_classifier(home)
+        root = write_transcripts(tmp_path / "projects", {
+            "project-alpha": ["naplan results for the year", "migrate the schema"],
+            "project-beta": ["migrate the database"],
+        })
+        cli.main(["explain", "--transcripts", str(root), "tidy the naplan report"])
+        out = capsys.readouterr().out
+        assert 'learned term "naplan"' in out and "topical: seen in only one project" in out
+
+    def test_does_not_mark_a_term_seen_in_two_projects(self, home, capsys, tmp_path):
+        self._configure(home)
+        write_classifier(home)
+        root = write_transcripts(tmp_path / "projects", {
+            "project-alpha": ["migrate the schema"],
+            "project-beta": ["migrate the database"],
+        })
+        cli.main(["explain", "--transcripts", str(root), "migrate the users"])
+        assert "topical" not in capsys.readouterr().out
+
+    def test_no_classifier_means_no_transcript_reading(self, home, capsys, tmp_path, monkeypatch):
+        self._configure(home)
+        write_classifier(home)
+        monkeypatch.setattr(cli.classifier_report, "attribute", _fail_if_called)
+        cli.main(["explain", "--no-classifier", "tidy the naplan report"])
+        assert "topical" not in capsys.readouterr().out
+
+    def test_a_missing_transcripts_directory_is_not_an_error(self, home, capsys, tmp_path):
+        self._configure(home)
+        write_classifier(home)
+        assert cli.main(["explain", "--transcripts", str(tmp_path / "gone"), "tidy the naplan report"]) == 0
+        assert "topical" not in capsys.readouterr().out
+
+    def test_a_prompt_matching_no_learned_term_reads_no_transcripts(self, home, monkeypatch, tmp_path):
+        self._configure(home)
+        write_classifier(home)
+        monkeypatch.setattr(cli.classifier_report, "attribute", _fail_if_called)
+        assert cli.main(["explain", "--transcripts", str(tmp_path), "tidy the module"]) == 0
+
+
+def _fail_if_called(*args, **kwargs):
+    raise AssertionError("transcripts must not be read for this prompt")
+
+
+class TestClassifierCommand:
+    def test_reports_the_installed_artifact_by_default(self, home, capsys, tmp_path):
+        write_classifier(home)
+        root = write_transcripts(tmp_path / "projects", {"project-alpha": ["migrate the naplan schema"]})
+        assert cli.main(["classifier", "--transcripts", str(root)]) == 0
+        out = capsys.readouterr().out
+        assert str(home / "classifier.json") in out
+        assert "2,143 prompts from 105 sessions" in out and "project-alpha" in out
+
+    def test_reads_an_explicit_artifact_path(self, home, capsys, tmp_path):
+        elsewhere = write_classifier(tmp_path, name="classifier.candidate.json")
+        assert cli.main([
+            "classifier", "--config", str(elsewhere), "--transcripts", str(tmp_path / "none"),
+        ]) == 0
+        assert "classifier.candidate.json" in capsys.readouterr().out
+
+    def test_says_how_to_create_a_missing_one(self, home, capsys, tmp_path):
+        assert cli.main(["classifier", "--transcripts", str(tmp_path / "none")]) == 2
+        assert "learn --apply" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("body", ["{not json", '"a string"', "[1, 2]", ""])
+    def test_survives_an_unusable_artifact(self, home, capsys, body, tmp_path):
+        (home / "classifier.json").write_text(body, encoding="utf-8")
+        assert cli.main(["classifier", "--transcripts", str(tmp_path / "none")]) == 2
+        assert capsys.readouterr().err.strip()
+
+    def test_reports_an_artifact_with_no_usable_terms(self, home, capsys, tmp_path):
+        write_classifier(home, terms={})
+        assert cli.main(["classifier", "--transcripts", str(tmp_path / "none")]) == 2
+        assert "nothing here is in effect" in capsys.readouterr().out
+
+    def test_flags_single_project_vocabulary(self, home, capsys, tmp_path):
+        write_classifier(home)
+        root = write_transcripts(tmp_path / "projects", {
+            "project-alpha": ["naplan results", "migrate the schema"],
+            "project-beta": ["migrate the database"],
+        })
+        cli.main(["classifier", "--transcripts", str(root)])
+        out = capsys.readouterr().out
+        assert "one project only" in out and "naplan -0.90" in out
 
 
 class TestUninstallCommand:

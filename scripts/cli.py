@@ -13,11 +13,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import analyze_history
+import classifier_report
 import complexity_router
+import decision_boundary
 import status_report
 import tune_threshold
 import uninstall as uninstall_module
 import update_pricing
+
+# `explain` marks the learned terms in one prompt as topical or not, which means reading
+# transcripts. It samples this many of the newest per project and stops as soon as a term has
+# been seen in two of them, so the answer costs a fraction of a second; `classifier` reads
+# everything.
+EXPLAIN_SAMPLE_PER_PROJECT = 2
 
 
 def home_dir() -> Path:
@@ -115,8 +123,33 @@ def cmd_explain(args: argparse.Namespace) -> int:
         verdict = f"{complexity_router.TIER_LABELS[tier]} -> {complexity_router.agent_name_for(model, tier)}"
     print(f"\n  score {score}/10   threshold {threshold:g}   {verdict}")
     print()
+    decision_boundary.render(prompt, detail, config, classifier, topical_terms(detail, args.transcripts))
+    print()
     print_ladder(config, highlight=tier)
     return 0
+
+
+def topical_terms(detail: dict, transcripts: Path | None) -> frozenset:
+    """Learned terms in this prompt that only ever appear in one of your projects.
+
+    Deliberately a sample: `explain` is something you run while thinking about a prompt, so it
+    reads the newest couple of transcripts per project and stops tracking a term once it has
+    turned up in two. A term flagged here was found in exactly one project, which is evidence;
+    a term not flagged may still be confined to one, which is why `classifier` exists.
+    """
+    terms = set(detail["matched_terms"])
+    root = transcripts or analyze_history.DEFAULT_TRANSCRIPTS
+    if not terms or not root.is_dir():
+        return frozenset()
+    found = classifier_report.attribute(
+        terms, root, per_project_limit=EXPLAIN_SAMPLE_PER_PROJECT, stop_at=2
+    )
+    return frozenset(classifier_report.single_project_terms(found))
+
+
+def cmd_classifier(args: argparse.Namespace) -> int:
+    target = args.config or (home_dir() / "classifier.json")
+    return classifier_report.render(target, args.transcripts or analyze_history.DEFAULT_TRANSCRIPTS)
 
 
 def print_ladder(config: dict, highlight: str | None = None, marked: bool = True) -> None:
@@ -240,7 +273,24 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument(
         "--no-classifier", action="store_true", help="score with the built-in signals only"
     )
+    explain.add_argument(
+        "--transcripts", type=Path, default=None,
+        help=f"transcripts to check learned terms against (default: {analyze_history.DEFAULT_TRANSCRIPTS})",
+    )
     explain.set_defaults(handler=cmd_explain)
+
+    inspect = subcommands.add_parser(
+        "classifier",
+        help="show what the learned classifier contains and which projects taught it",
+    )
+    inspect.add_argument(
+        "--config", type=Path, default=None, help="classifier.json to read (default: your install)",
+    )
+    inspect.add_argument(
+        "--transcripts", type=Path, default=None,
+        help=f"transcripts to attribute terms to (default: {analyze_history.DEFAULT_TRANSCRIPTS})",
+    )
+    inspect.set_defaults(handler=cmd_classifier)
 
     status = subcommands.add_parser(
         "status",
