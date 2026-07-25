@@ -43,12 +43,16 @@ MS_TYPE, MS_LINE, MS_PAUSE, MS_HOLD = 45, 70, 700, 2600
 
 # Terminal output is plain text; colour is applied here by rule so the replay reads clearly.
 RULES = (
+    # Labels first: the tier rules below deliberately recolour the agent names inside them.
+    (re.compile(r"injected into Claude's context.*|Claude's first action:|\.\.\. must be"), DIM),
     (re.compile(r"COMPLEX|heavy-task-[\w-]+"), ORANGE),
     (re.compile(r"MODERATE|mid-task-[\w-]+"), YELLOW),
     (re.compile(r"answered in-session|in-session"), CYAN),
     (re.compile(r"saved \$[\d.,]+ \(\d+%\)|with terms|\+\d+\.\d+"), GREEN),
     (re.compile(r"routing off|no rate:|-\d+\.\d+"), RED),
     (re.compile(r"\$[\d.,]+|\d+\.\d+%|\b\d+/10\b"), WHITE),
+    # A typed prompt, in the scene that has no shell prompt to type at.
+    (re.compile(r"^> .*"), WHITE),
 )
 
 
@@ -176,7 +180,21 @@ def scene_install(term: Terminal, capture: Path) -> None:
     term.snap(MS_HOLD)
 
 
+def scene_session(term: Terminal, capture: Path) -> None:
+    """The one that matters: routing happens on ordinary prompts, with nothing typed at it."""
+    term.emit("# There is no command to run. You type prompts; the hook scores every one", MS_PAUSE)
+    term.emit("# before Claude sees it, and delegates the ones that need a stronger model.", MS_PAUSE)
+    term.emit("")
+    term.emit(read(capture, "session.txt"), MS_LINE)
+    term.snap(MS_PAUSE)
+    term.emit("")
+    term.emit("# The statusline prices it as you go:", MS_PAUSE)
+    term.emit(read(capture, "statusline.txt"))
+    term.snap(MS_HOLD)
+
+
 def scene_usage(term: Terminal, capture: Path) -> None:
+    term.emit("# The CLI is for maintenance only — routing needs none of it.", MS_PAUSE)
     term.emit("# See where a prompt routes, without spending a token.", MS_PAUSE)
     term.type_command('model-switcher explain "refactor the auth module and migrate the schema"')
     term.emit(read(capture, "explain1.txt"))
@@ -189,13 +207,10 @@ def scene_usage(term: Terminal, capture: Path) -> None:
     term.type_command("model-switcher learn")
     term.emit(read(capture, "learn_trimmed.txt"))
     term.snap(MS_PAUSE)
-    term.emit("")
-    term.emit("# And the statusline prices every turn offline:", MS_PAUSE)
-    term.emit(read(capture, "statusline.txt"))
     term.snap(MS_HOLD)
 
 
-SCENES = {"install": scene_install, "usage": scene_usage}
+SCENES = {"install": scene_install, "session": scene_session, "usage": scene_usage}
 
 
 def main(argv: list[str] | None = None) -> int:

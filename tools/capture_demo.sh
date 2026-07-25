@@ -58,6 +58,69 @@ if grep -q "^strongest signals" "$OUT/learn_trimmed.txt"; then
   exit 1
 fi
 
+# The in-session scene: what the router does on ordinary prompts, with no command run at all.
+# Every score and every directive below is produced by driving the real hook and the real
+# explain path; only the "> prompt" framing and the indent labels are added here.
+python3 - "$SANDBOX" > "$OUT/session.txt" <<'PY'
+import json, os, pathlib, re, subprocess, sys
+
+sandbox = pathlib.Path(sys.argv[1])
+home = sandbox / "model-switcher"
+env = {**os.environ, "MODEL_SWITCHER_HOME": str(home)}
+
+PROMPTS = [
+    "what does this function do?",
+    "fix the failing test in the config parser",
+    "refactor the auth module, migrate the schema and add tests",
+]
+
+
+def hook(prompt):
+    """The directive the hook injects, or None when it stays out of the way."""
+    out = subprocess.run(
+        [sys.executable, str(home / "complexity_router.py")],
+        input=json.dumps({"prompt": prompt, "session_id": "demo"}),
+        capture_output=True, text=True, env=env,
+    ).stdout.strip()
+    if not out:
+        return None
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def score_and_verdict(prompt):
+    out = subprocess.run(
+        [sys.executable, str(home / "cli.py"), "explain", prompt],
+        capture_output=True, text=True, env=env,
+    ).stdout
+    score = re.search(r"score (\d+)/10", out)
+    return score.group(1) if score else "?"
+
+
+for prompt in PROMPTS:
+    print(f"> {prompt}")
+    directive = hook(prompt)
+    score = score_and_verdict(prompt)
+    if directive is None:
+        print(f"    score {score}/10 -> below the threshold, answered in-session on haiku")
+        print()
+        continue
+    tier = re.search(r"classified (\w+)", directive)
+    agent = re.search(r"'([\w-]+)' subagent", directive)
+    print(f"    score {score}/10 -> {tier.group(1) if tier else '?'}")
+    print("    injected into Claude's context, before Claude reads the prompt:")
+    # Split at the colon and elide the rest: the real directive is far wider than the frame.
+    preamble, _, classification = directive.split(". ")[0].partition("): ")
+    print(f"      {preamble}):")
+    print(f"      {classification}. ... must be executed by the '{agent.group(1)}' subagent")
+    print(f"    Claude's first action: spawn {agent.group(1)}")
+    print()
+PY
+
+if ! grep -q "heavy-task-" "$OUT/session.txt"; then
+  echo "refusing to continue: the session capture shows no complex delegation" >&2
+  exit 1
+fi
+
 # A statusline over a transcript shaped like a mixed session: cheap model for most of the
 # work, one delegation to the heavy one.
 python3 - "$SANDBOX" > "$OUT/statusline.txt" <<'PY'
@@ -67,9 +130,11 @@ usage = {"input_tokens": 2000, "output_tokens": 3000, "cache_read_input_tokens":
          "cache_creation_input_tokens": 40000,
          "cache_creation": {"ephemeral_1h_input_tokens": 40000, "ephemeral_5m_input_tokens": 0}}
 rows = [("claude-haiku-4-5", usage)] * 6 + [("claude-sonnet-5", usage)] * 2 + [("claude-fable-5", usage)]
-lines = [json.dumps({"type": "user", "message": {}})]
-lines += [json.dumps({"type": "assistant", "message": {"id": f"m{i}", "model": m, "usage": u}})
-          for i, (m, u) in enumerate(rows)]
+user = json.dumps({"type": "user", "message": {}})
+assistant = [json.dumps({"type": "assistant", "message": {"id": f"m{i}", "model": m, "usage": u}})
+             for i, (m, u) in enumerate(rows)]
+# A second user turn near the end, so `turn` is the current exchange rather than the whole session.
+lines = [user, *assistant[:-1], user, assistant[-1]]
 transcript = sandbox / "session.jsonl"
 transcript.write_text("\n".join(lines) + "\n")
 payload = json.dumps({"model": {"display_name": "Haiku 4.5"}, "transcript_path": str(transcript)})

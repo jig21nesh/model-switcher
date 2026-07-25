@@ -75,18 +75,29 @@ When delegation happens, the statusline model name does not change — Claude Co
 One command. The hook, statusline, both tier agents, the policy block and the `model-switcher`
 command all land in `~/.claude` — **after which the repo is no longer needed**.
 
-### Using it
+### Using it — there is nothing to run
 
-![Using model-switcher — explain shows how a prompt routes, learn tunes the router, and the statusline prices each turn](docs/usage-demo.gif)
+![model-switcher working inside a session — every prompt is scored by the hook, simple ones answered in-session, harder ones delegated to mid-task and heavy-task agents](docs/session-demo.gif)
 
-`explain` shows where a prompt routes and why, before you spend a token. `learn` tunes the router
-on your own history and reports the accuracy change. The statusline prices every turn offline and
-shows what routing saved.
+**You never invoke model-switcher to route a prompt.** You type prompts as you always have. The
+`UserPromptSubmit` hook scores every one before Claude reads it, and injects a routing directive
+only when the score clears a threshold. Simple prompts are answered in the session on your cheap
+model; harder ones are delegated to `mid-task-*` or `heavy-task-*`.
 
-*Both recordings above replay genuine captured output — `tools/capture_demo.sh` runs the real
-installer and CLI in a sandbox, and `tools/make_demo_gif.py` types the result back. The `learn`
-term lists are withheld from the recording because they are derived from whatever the operator
-happened to be working on.*
+### The CLI, for maintenance only
+
+![Maintenance commands — explain shows how a prompt routes, learn tunes the router from your history, pricing refreshes your rate table](docs/usage-demo.gif)
+
+None of these are needed for routing to work — they are for inspecting and tuning it. `explain`
+shows where a prompt routes and why, before you spend a token. `tiers` prints your routing ladder.
+`learn` tunes the router on your own history and reports the accuracy change. `pricing` refreshes
+your rate table.
+
+*All three recordings replay genuine captured output — `tools/capture_demo.sh` runs the real
+installer, the real hook and the real CLI in a sandbox, and `tools/make_demo_gif.py` types the
+result back. In the session recording, every score and every directive comes from driving the
+actual hook; only the `>` prompt framing and the indented labels are added. The `learn` term lists
+are withheld because they derive from whatever the operator happened to be working on.*
 
 ---
 
