@@ -18,7 +18,16 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 DEFAULT_SOURCE = "https://raw.githubusercontent.com/jig21nesh/model-switcher/main/config/pricing.json"
-BUNDLED = Path(__file__).resolve().parent.parent / "config" / "pricing.json"
+
+
+def _bundled_table() -> Path:
+    """Locate the shipped table from either layout: the repo, or a flat install directory."""
+    here = Path(__file__).resolve().parent
+    flat = here / "pricing.json"
+    return flat if flat.exists() else here.parent / "config" / "pricing.json"
+
+
+BUNDLED = _bundled_table()
 FETCH_TIMEOUT_SECONDS = 15
 # The real table is a few KB; anything far larger is not the file we asked for.
 MAX_SOURCE_BYTES = 256 * 1024

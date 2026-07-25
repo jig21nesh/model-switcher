@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Entry point shim. The logic lives in scripts/cli.py so that it is linted and covered."""
+"""Entry point for the model-switcher CLI.
+
+The same file works from two layouts, because it is copied verbatim into the install
+directory: the repo, where the modules sit in scripts/, hooks/ and statusline/, and
+~/.claude/model-switcher/, where they sit flat alongside this script. The logic lives in
+scripts/cli.py so that it is linted and coverage-measured.
+"""
 
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
-for _package in ("scripts", "hooks", "statusline"):
-    sys.path.insert(0, str(_ROOT / _package))
+_HERE = Path(__file__).resolve().parent
+for _location in (_HERE, *(_HERE.parent / name for name in ("scripts", "hooks", "statusline"))):
+    if _location.is_dir():
+        sys.path.insert(0, str(_location))
 
 from cli import main  # noqa: E402
 
