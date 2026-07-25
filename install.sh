@@ -30,9 +30,11 @@ Options:
                   Default: set it to models.simple from config.json (the
                   previous value is recorded and restored on uninstall).
   --uninstall     Remove everything the installer added: hook, statusline,
-                  agent, CLAUDE.md block, and settings entries; restores your
+                  agents, CLAUDE.md block, and settings entries; restores your
                   previous model and statusline from the manifest.
-                  Kept: $CLAUDE_DIR/model-switcher/config.json (models, pricing).
+                  Kept: config.json and any learned classifier.json.
+                  The same thing, without needing this repo:
+                    $CLAUDE_DIR/model-switcher/model-switcher uninstall --yes
   -h, --help      Show this help and exit.
 
 Configuration:  $CLAUDE_DIR/model-switcher/config.json
@@ -74,20 +76,13 @@ PY
 }
 
 if [ "$UNINSTALL" -eq 1 ]; then
-  python3 "$REPO_DIR/scripts/merge_settings.py" uninstall \
-    --settings "$SETTINGS" --install-dir "$INSTALL_DIR" --config "$CONFIG" --manifest "$MANIFEST"
-  python3 "$REPO_DIR/scripts/manage_claude_md.py" uninstall \
-    --claude-md "$CLAUDE_DIR/CLAUDE.md" --manifest "$MANIFEST"
-  python3 "$REPO_DIR/scripts/generate_agent.py" uninstall \
-    --agents-dir "$AGENTS_DIR" --manifest "$MANIFEST"
-  rm -f "$INSTALL_DIR/complexity_router.py" "$INSTALL_DIR/cost_statusline.py" \
-    "$INSTALL_DIR/merge_settings.py" "$INSTALL_DIR/manage_claude_md.py" \
-    "$INSTALL_DIR/claude-md-section.md" "$INSTALL_DIR/cli.py" \
-    "$INSTALL_DIR/analyze_history.py" "$INSTALL_DIR/update_pricing.py" \
-    "$INSTALL_DIR/pricing.json" "$INSTALL_DIR/model-switcher" "$MANIFEST"
-  # Stale bytecode from the removed scripts would otherwise shadow a later install.
-  rm -rf "$INSTALL_DIR/state" "$INSTALL_DIR/__pycache__"
-  echo "model-switcher removed. Kept: $CONFIG. Restart Claude Code sessions to apply."
+  # One implementation, in Python, shared with `model-switcher uninstall` so the two cannot
+  # drift. Prefer the installed copy: it matches what is actually on disk.
+  if [ -f "$INSTALL_DIR/uninstall.py" ]; then
+    python3 "$INSTALL_DIR/uninstall.py" --claude-dir "$CLAUDE_DIR" --install-dir "$INSTALL_DIR"
+  else
+    python3 "$REPO_DIR/scripts/uninstall.py" --claude-dir "$CLAUDE_DIR" --install-dir "$INSTALL_DIR"
+  fi
   exit 0
 fi
 
@@ -98,7 +93,8 @@ cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/statusline/cost_statusline.
 # The maintenance CLI and everything it needs, so pricing/learn/explain keep working after the
 # clone is deleted. Copied flat; bin/model-switcher handles both layouts.
 cp "$REPO_DIR/scripts/cli.py" "$REPO_DIR/scripts/analyze_history.py" \
-  "$REPO_DIR/scripts/update_pricing.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
+  "$REPO_DIR/scripts/update_pricing.py" "$REPO_DIR/scripts/generate_agent.py" \
+  "$REPO_DIR/scripts/uninstall.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
 cp "$REPO_DIR/bin/model-switcher" "$INSTALL_DIR/model-switcher"
 chmod +x "$INSTALL_DIR/model-switcher"
 [ -f "$CONFIG" ] || cp "$REPO_DIR/config/config.example.json" "$CONFIG"

@@ -222,3 +222,39 @@ class TestExplainCommand:
         self._configure(home)
         cli.main(["explain", "refactor " * 200])
         assert "..." in capsys.readouterr().out
+
+
+class TestUninstallCommand:
+    def _installed(self, home):
+        (home / "installed.json").write_text(json.dumps({"created_claude_md": False}))
+        (home / "config.json").write_text("{}")
+        return home
+
+    def test_dry_run_changes_nothing(self, home, capsys, monkeypatch):
+        self._installed(home)
+        called = []
+        monkeypatch.setattr(cli.uninstall_module, "main", lambda argv: called.append(argv) or 0)
+        assert cli.main(["uninstall"]) == 1
+        assert "Re-run with --yes" in capsys.readouterr().out
+        assert called == [], "a dry run must not touch anything"
+
+    def test_yes_performs_the_removal(self, home, monkeypatch):
+        self._installed(home)
+        called = []
+        monkeypatch.setattr(cli.uninstall_module, "main", lambda argv: called.append(argv) or 0)
+        assert cli.main(["uninstall", "--yes"]) == 0
+        argv = called[0]
+        assert argv[argv.index("--install-dir") + 1] == str(home)
+        assert argv[argv.index("--claude-dir") + 1] == str(home.parent)
+
+    def test_reports_when_nothing_is_installed(self, home, capsys):
+        assert cli.main(["uninstall", "--yes"]) == 2
+        assert "nothing installed" in capsys.readouterr().err
+
+    def test_honours_an_explicit_claude_dir(self, home, tmp_path, monkeypatch):
+        self._installed(home)
+        called = []
+        monkeypatch.setattr(cli.uninstall_module, "main", lambda argv: called.append(argv) or 0)
+        cli.main(["uninstall", "--yes", "--claude-dir", str(tmp_path / "elsewhere")])
+        argv = called[0]
+        assert argv[argv.index("--claude-dir") + 1] == str(tmp_path / "elsewhere")
