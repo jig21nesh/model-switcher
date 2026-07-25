@@ -618,7 +618,7 @@ Statusline before pricing is configured:
 Sonnet 5 | cost n/a: set pricing in ~/.claude/model-switcher/config.json (rates: https://claude.com/pricing)
 ```
 
-A model with tokens in the transcript but no pricing entry is flagged with `no rate: <model-id>` rather than silently dropped. If the transcript carries no usage data at all, the line falls back to Claude Code's built-in estimate, labelled `(builtin est.)`.
+A model with tokens in the transcript but no pricing entry is flagged with `no rate: <model-id>` rather than silently dropped. Entries that billed **nothing** are not flagged — Claude Code writes `<synthetic>` placeholders for interrupts and error messages with every token field at zero, and warning about a missing rate for those would imply cost data you cannot supply. If the transcript carries no usage data at all, the line falls back to Claude Code's built-in estimate, labelled `(builtin est.)`.
 
 ---
 
