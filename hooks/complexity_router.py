@@ -38,6 +38,8 @@ CLASSIFIER_SPLIT_RE = re.compile(r"[^a-z0-9-]+")
 # Hard ceiling on how far learned weights may move a score, whatever the artifact claims. The
 # hand-tuned signals keep authority: a skewed or hostile classifier cannot dominate them.
 CLASSIFIER_MAX_ADJUSTMENT = 3.0
+# What a prompt scores once a lookup cap applies, however much else it matched.
+CAPPED_SCORE = 2
 
 STRONG_KEYWORDS = (
     "refactor", "architect", "architecture", "redesign", "implement", "migrate", "migration",
@@ -196,6 +198,19 @@ def learned_adjustment(text: str, classifier: dict) -> tuple[float, dict[str, fl
     return max(-limit, min(limit, sum(matched.values()))), matched
 
 
+def final_score(base: float, adjustment: float, caps: list) -> int:
+    """The routed score from its parts.
+
+    Separate from analyse_prompt so the offline sensitivity report can ask what a prompt would
+    have scored without one of its contributions without re-deriving the rounding, the clamp or
+    the lookup cap — a counterfactual that disagreed with routing would be worse than none.
+    """
+    score = base + adjustment
+    if caps:
+        score = min(score, CAPPED_SCORE)
+    return max(0, min(int(round(score)), 10))
+
+
 def analyse_prompt(prompt: str, classifier: dict | None = None) -> dict:
     """Score a prompt and record why, so `explain` and routing can never disagree."""
     truncated = len(prompt) > SCORE_MAX_CHARS
@@ -227,7 +242,6 @@ def analyse_prompt(prompt: str, classifier: dict | None = None) -> dict:
 
     base = sum(points for _, points in signals)
     adjustment, matched = learned_adjustment(text, classifier) if classifier else (0.0, {})
-    score = base + adjustment
 
     # Short pure questions without a task verb are lookups; definitional questions are lookups
     # even when they mention task vocabulary; short affirmations continue in-session work.
@@ -240,8 +254,6 @@ def analyse_prompt(prompt: str, classifier: dict | None = None) -> dict:
         caps.append("definitional question")
     if words <= 12 and AFFIRMATION_RE.match(text):
         caps.append("affirmation")
-    if caps:
-        score = min(score, 2)
 
     return {
         "signals": signals,
@@ -249,7 +261,7 @@ def analyse_prompt(prompt: str, classifier: dict | None = None) -> dict:
         "learned": round(adjustment, 2),
         "matched_terms": matched,
         "caps": caps,
-        "score": max(0, min(int(round(score)), 10)),
+        "score": final_score(base, adjustment, caps),
     }
 
 

@@ -13,9 +13,11 @@ select = ["E", "F", "I", "N", "W"]
 known-first-party = [
     "analyze_history",
     "agent_router",
+    "classifier_report",
     "cli",
     "complexity_router",
     "cost_statusline",
+    "decision_boundary",
     "generate_agent",
     "manage_claude_md",
     "merge_settings",

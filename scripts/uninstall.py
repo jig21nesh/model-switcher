@@ -26,6 +26,8 @@ INSTALLED_FILES = (
     "status_report.py",
     "agent_router.py",
     "tune_threshold.py",
+    "classifier_report.py",
+    "decision_boundary.py",
     "cli.py",
     "analyze_history.py",
     "update_pricing.py",

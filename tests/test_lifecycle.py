@@ -176,7 +176,8 @@ def test_the_cli_is_installed_and_runs_without_the_repo(claude_dir, tmp_path):
     install_dir = claude_dir / "model-switcher"
     cli = install_dir / "model-switcher"
     assert cli.exists() and os.access(cli, os.X_OK)
-    for name in ("cli.py", "analyze_history.py", "update_pricing.py", "tune_threshold.py", "pricing.json"):
+    for name in ("cli.py", "analyze_history.py", "update_pricing.py", "tune_threshold.py",
+                 "classifier_report.py", "decision_boundary.py", "pricing.json"):
         assert (install_dir / name).exists(), f"{name} must be installed for the CLI to work"
 
     # Copy the install somewhere unrelated and run it with the repo nowhere in sight.
@@ -200,6 +201,15 @@ def test_the_cli_is_installed_and_runs_without_the_repo(claude_dir, tmp_path):
     )
     assert priced.returncode in (0, 1), priced.stderr
     assert "pricing" in priced.stdout
+
+    # A fresh install has learned nothing yet: the report has to say so rather than fail.
+    inspected = subprocess.run(
+        ["python3", str(isolated / "model-switcher"), "classifier",
+         "--transcripts", str(tmp_path / "no-transcripts")],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=60,
+    )
+    assert inspected.returncode == 2
+    assert "learn --apply" in inspected.stderr
 
 
 def test_uninstall_removes_the_cli_and_stale_bytecode(claude_dir):

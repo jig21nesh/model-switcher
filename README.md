@@ -89,10 +89,12 @@ model; harder ones are delegated to `mid-task-*` or `heavy-task-*`.
 ![Maintenance commands — explain shows how a prompt routes, learn tunes the router from your history, pricing refreshes your rate table](docs/usage-demo.gif)
 
 None of these are needed for routing to work — they are for inspecting and tuning it. `explain`
-shows where a prompt routes and why, before you spend a token. `tiers` prints your routing ladder.
-`learn` tunes the router on your own history and reports the accuracy change. `tune` shows what
-that history says about your `complexity.threshold`. `status` reports what the install is
-configured to do and what is wrong with it. `pricing` refreshes your rate table.
+shows where a prompt routes and why, how close the call was and what would have changed it, before
+you spend a token. `tiers` prints your routing ladder. `learn` tunes the router on your own history
+and reports the accuracy change. `classifier` shows what that produced — how much of the learned
+table is noise, and which of your projects taught it each word. `tune` shows what that history says
+about your `complexity.threshold`. `status` reports what the install is configured to do and what is
+wrong with it. `pricing` refreshes your rate table.
 
 *All three recordings replay genuine captured output — `tools/capture_demo.sh` runs the real
 installer, the real hook and the real CLI in a sandbox, and `tools/make_demo_gif.py` types the
@@ -327,6 +329,71 @@ than naming a number.
 Nothing leaves your machine, and no prompt text is printed or written — only counts, rates and
 scores. A three-tier install is swept as in-session versus `models.complex` only, and says so.
 
+### Look at what it learned before you trust it
+
+`learn` reports how much the weights improved routing. It does not tell you *what they are*, and a
+weight table that improves accuracy on your history can still be measuring the wrong thing.
+`classifier` opens the artifact up:
+
+```sh
+model-switcher classifier                     # the live one
+model-switcher classifier --config ~/.claude/model-switcher/classifier.candidate.json
+```
+
+```text
+  learned      2026-07-25T03:39:15+00:00
+  generator    model-switcher/analyze_history, schema version 1
+  corpus       2,143 prompts from 105 sessions
+               544 became real work, 1,599 did not (25% heavy)
+  terms        25 in effect, weights -0.72 to +1.12, bounded to +-3 per prompt
+
+  weight distribution
+    |w| < 0.5              12   48%  ###########             weak — six of these move a score by one point
+    0.5 <= |w| < 1         11   44%  ##########              moves a score on its own
+    1 <= |w| < 1.35         2    8%  ##                      strong
+    |w| >= 1.35             0    0%                          at or near the +-1.5 clamp, so cut off
+                                                            12 positive, 13 negative
+
+  evidence floor  5 terms share exactly -0.390
+                  a weight that many terms agree on is the minimum-evidence floor showing
+                  through, not a measurement: they are indistinguishable from each other
+
+  strongest evidence a prompt becomes real work
+    implement +1.12, ensure +1.05, migrate +0.94, confirm +0.83, endpoint +0.71, schema +0.66
+
+  vocabulary by project   3 projects, 3 transcripts, 180 prompts read
+    project                                   terms  only here
+    -Users-you-code-payments-api                 15          3
+    -Users-you-code-mobile-app                   14          8
+    -Users-you-code-data-pipeline                12          2
+
+  topic, not difficulty
+    a term whose prompts all come from one project measures which project you are in, not
+    how hard the prompt is; it will mis-score the day you start working somewhere else
+    one project only      13 of 25 terms (52%)
+      retry +0.63, colour -0.61, checkout +0.52, wording -0.52, onboarding +0.47, invoice +0.44
+```
+
+Three things are worth knowing about your own table, and none of them are visible from an accuracy
+figure:
+
+- **How much of it is noise.** A weight below ±0.5 needs six matching terms to move a score by a
+  single point. If most of the table sits there, most of the table is doing nothing.
+- **Where the evidence floor is.** Terms that share one exact weight all hit the minimum evidence
+  the producer accepts and nothing more. They are indistinguishable from each other by
+  construction, so their ranking against each other means nothing.
+- **Whether it learned difficulty or subject.** Transcripts are stored per project, so every term
+  can be traced to the projects whose prompts contained it. A term found in only one project — or
+  taking 90%+ of its prompts from one — is that project's vocabulary. It will route on *which repo
+  you are in*, and it will be wrong somewhere else. Words like `naplan`, `strava` or `checkout`
+  are the tell.
+
+Both lists are printed in full so you can decide. If too much of the table is topical, learn again
+with a wider corpus (`learn --transcripts`), or keep routing on the built-in signals alone.
+
+Point `--transcripts` somewhere else to attribute against a different corpus. Nothing here writes
+anything: it reads the artifact and your transcripts, and prints.
+
 ### Ask why a prompt routes the way it does
 
 `explain` scores a prompt and shows its working, without spending a token:
@@ -344,6 +411,14 @@ model-switcher explain "ensure the deployment pipeline works end2end"
 
   score 4/10   threshold 5   MODERATE -> mid-task-sonnet
 
+  decision boundary
+    1 point clear of the MODERATE threshold (3)
+    what carried it there
+      domain terms (pipeline, deployment)           +2.00
+      learned term "ensure"                         +1.16
+      learned term "end2end"                        +0.88
+    without domain terms (pipeline, deployment) (+2) it scores 2 — answered in-session
+
   routing ladder (3 tiers)
      score < 3               simple    haiku         answered in-session
   -> 3 <= score < 5          moderate  sonnet        mid-task-sonnet
@@ -353,6 +428,37 @@ model-switcher explain "ensure the deployment pipeline works end2end"
 Add `--no-classifier` to see the built-in signals alone. The explanation comes from the same code
 path that does the routing, so it cannot disagree with what actually happens — and the ladder
 underneath shows the other bands, so you can see what a slightly harder prompt would have done.
+
+**The decision boundary block answers "was that close?"** A score on its own does not tell you
+whether the prompt sailed over the threshold or scraped it. This does:
+
+- how far it landed from the threshold that decided it — the one it crossed, or the nearest one above
+- for a prompt that routed: what carried it there, and what it would have scored without the
+  largest of those (the counterfactual runs through the router's own scoring, so it cannot drift)
+- for a prompt that stayed in-session: which real signals would have flipped it, each measured by
+  re-scoring the prompt with that signal in it, and where it would then have gone
+- what is holding it back — the negative learned terms, and any lookup cap, which is applied
+  *after* learned weights and so cannot be argued away by them
+
+For a prompt that stayed in-session because of vocabulary you only use in one repo:
+
+```text
+  score 0/10   threshold 5   answered in-session
+
+  decision boundary
+    5 points short of the COMPLEX threshold (5), the nearest routing edge
+    what would flip it
+      + the learned term "implement" (+1.12)            scores 6   COMPLEX -> heavy-task-fable
+      + a built-in task verb, e.g. "refactor"           scores 5   COMPLEX -> heavy-task-fable
+    what is holding it back
+      learned term "wording"                        -0.52   topical: seen in only one project
+      learned term "screen"                         -0.41   topical: seen in only one project
+      no built-in signal matched, so the score started at 0
+```
+
+`topical` means that term's prompts were only ever found in one of your projects, which makes it
+a subject rather than a difficulty — see below. `explain` samples a couple of transcripts per
+project to answer that quickly; `model-switcher classifier` reads all of them.
 
 Learned weights are bounded: they can move a score by at most ±3, and the lookup caps are applied
 *after* them, so no weight table — however skewed or hand-edited — can turn a short question into a
@@ -457,7 +563,7 @@ sequenceDiagram
 | `~/.claude/model-switcher/cost_statusline.py` | Statusline command |
 | `~/.claude/model-switcher/config.json` | Your configuration — created from `config/config.example.json` if absent, never overwritten |
 | `~/.claude/model-switcher/installed.json` | Manifest of your pre-install `model`/`statusLine`/agent, used by uninstall |
-| `~/.claude/model-switcher/model-switcher` | The `pricing` / `learn` / `tune` / `explain` / `status` CLI, plus the modules and rate table it needs — so it keeps working if you delete the clone |
+| `~/.claude/model-switcher/model-switcher` | The `status` / `tiers` / `explain` / `learn` / `classifier` / `tune` / `pricing` CLI, plus the modules and rate table it needs — so it keeps working if you delete the clone |
 | `~/.claude/model-switcher/classifier.json` | Learned routing weights, once you run `learn --apply`. Kept on uninstall, like your config |
 | `~/.claude/agents/heavy-task-<model>.md` | The subagent, named for and stamped with your configured complex model, e.g. `heavy-task-fable` |
 | `~/.claude/agents/mid-task-<model>.md` | The middle-tier subagent — only when `models.standard` is set, e.g. `mid-task-sonnet` |
@@ -858,6 +964,7 @@ Contributions are welcome, especially around:
 - [x] Add a dry-run mode that only shows routing decisions — `model-switcher explain`
 - [x] Learn routing weights from your own history — `model-switcher learn`
 - [x] Calibrate the threshold against your own history — `model-switcher tune`
+- [x] Show what the learned weights contain and which projects taught them — `model-switcher classifier`
 - [x] Publish first tagged release — [v0.1.0](https://github.com/jig21nesh/model-switcher/releases/tag/v0.1.0)
 
 ## Ideas to fork or extend
