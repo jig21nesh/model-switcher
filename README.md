@@ -116,6 +116,11 @@ cd model-switcher
 ./install.sh
 ```
 
+The installer puts a `model-switcher` command in `~/.claude/model-switcher/` alongside everything
+else, so the commands below keep working after you delete the clone. Add that directory to your
+`PATH` (or symlink the binary) to type just `model-switcher`; otherwise call it by full path, or
+run `./bin/model-switcher` from the repo.
+
 Then:
 
 1. Restart your Claude Code sessions (CLI and VS Code) — settings load at startup.
@@ -179,8 +184,8 @@ question of every past prompt: *did it actually become work?* Tool calls, file e
 subagents are all recorded, so the answer is observable rather than assumed.
 
 ```sh
-./bin/model-switcher learn          # analyse and write a candidate — routing unchanged
-./bin/model-switcher learn --apply  # promote the candidate to live
+model-switcher learn          # analyse and write a candidate — routing unchanged
+model-switcher learn --apply  # promote the candidate to live
 ```
 
 It prints a before/after comparison measured on **your own** history, so you can see whether it
@@ -211,7 +216,7 @@ to consume it: [`docs/classifier-schema.md`](docs/classifier-schema.md).
 `explain` scores a prompt and shows its working, without spending a token:
 
 ```sh
-./bin/model-switcher explain "ensure the deployment pipeline works end2end"
+model-switcher explain "ensure the deployment pipeline works end2end"
 ```
 
 ```text
@@ -330,6 +335,8 @@ sequenceDiagram
 | `~/.claude/model-switcher/cost_statusline.py` | Statusline command |
 | `~/.claude/model-switcher/config.json` | Your configuration — created from `config/config.example.json` if absent, never overwritten |
 | `~/.claude/model-switcher/installed.json` | Manifest of your pre-install `model`/`statusLine`/agent, used by uninstall |
+| `~/.claude/model-switcher/model-switcher` | The `pricing` / `learn` / `explain` CLI, plus the modules and rate table it needs — so it keeps working if you delete the clone |
+| `~/.claude/model-switcher/classifier.json` | Learned routing weights, once you run `learn --apply`. Kept on uninstall, like your config |
 | `~/.claude/agents/heavy-task-<model>.md` | The subagent, named for and stamped with your configured complex model, e.g. `heavy-task-fable` |
 | `~/.claude/agents/mid-task-<model>.md` | The middle-tier subagent — only when `models.standard` is set, e.g. `mid-task-sonnet` |
 | `~/.claude/settings.json` | Hook and statusline entries merged in; session model set to your simple model unless `--skip-model` is used |
@@ -427,9 +434,9 @@ Both are optional and their absence reproduces the previous behaviour exactly, s
 ### Keeping rates current
 
 ```sh
-./bin/model-switcher pricing              # compare your config against the maintained table
-./bin/model-switcher pricing --yes        # apply the differences (backs up your config first)
-./bin/model-switcher pricing --offline    # use the table bundled in this repo, no network
+model-switcher pricing              # compare your config against the maintained table
+model-switcher pricing --yes        # apply the differences (backs up your config first)
+model-switcher pricing --offline    # use the bundled table, no network
 ```
 
 The check exits non-zero when your rates have drifted, so it works in a scheduled job. It fetches

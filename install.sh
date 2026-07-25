@@ -82,8 +82,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
     --agents-dir "$AGENTS_DIR" --manifest "$MANIFEST"
   rm -f "$INSTALL_DIR/complexity_router.py" "$INSTALL_DIR/cost_statusline.py" \
     "$INSTALL_DIR/merge_settings.py" "$INSTALL_DIR/manage_claude_md.py" \
-    "$INSTALL_DIR/claude-md-section.md" "$MANIFEST"
-  rm -rf "$INSTALL_DIR/state"
+    "$INSTALL_DIR/claude-md-section.md" "$INSTALL_DIR/cli.py" \
+    "$INSTALL_DIR/analyze_history.py" "$INSTALL_DIR/update_pricing.py" \
+    "$INSTALL_DIR/pricing.json" "$INSTALL_DIR/model-switcher" "$MANIFEST"
+  # Stale bytecode from the removed scripts would otherwise shadow a later install.
+  rm -rf "$INSTALL_DIR/state" "$INSTALL_DIR/__pycache__"
   echo "model-switcher removed. Kept: $CONFIG. Restart Claude Code sessions to apply."
   exit 0
 fi
@@ -92,6 +95,12 @@ mkdir -p "$INSTALL_DIR/state" "$AGENTS_DIR"
 cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/statusline/cost_statusline.py" \
   "$REPO_DIR/scripts/merge_settings.py" "$REPO_DIR/scripts/manage_claude_md.py" \
   "$REPO_DIR/config/claude-md-section.md" "$INSTALL_DIR/"
+# The maintenance CLI and everything it needs, so pricing/learn/explain keep working after the
+# clone is deleted. Copied flat; bin/model-switcher handles both layouts.
+cp "$REPO_DIR/scripts/cli.py" "$REPO_DIR/scripts/analyze_history.py" \
+  "$REPO_DIR/scripts/update_pricing.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
+cp "$REPO_DIR/bin/model-switcher" "$INSTALL_DIR/model-switcher"
+chmod +x "$INSTALL_DIR/model-switcher"
 [ -f "$CONFIG" ] || cp "$REPO_DIR/config/config.example.json" "$CONFIG"
 
 COMPLEX_MODEL="$(read_config_model complex fable)"
@@ -142,7 +151,10 @@ fi
 if [ "$SKIP_MODEL" -eq 0 ]; then echo "  session model set to: $SIMPLE_MODEL (previous value saved in $MANIFEST)"; fi
 echo "  config:     $CONFIG"
 echo "              (pricing ships pre-filled; refresh it with ./bin/model-switcher pricing)"
+echo "  cli:        $INSTALL_DIR/model-switcher (works without this repo)"
 echo "Next:"
-echo "  ./bin/model-switcher explain \"<a prompt>\"   see how a prompt scores and where it routes"
-echo "  ./bin/model-switcher learn                  tune routing from your own history"
+echo "  $INSTALL_DIR/model-switcher explain \"<a prompt>\"   how a prompt scores and where it routes"
+echo "  $INSTALL_DIR/model-switcher learn                  tune routing from your own history"
+echo "  $INSTALL_DIR/model-switcher pricing                check your token rates"
+echo "  (add $INSTALL_DIR to PATH, or symlink the CLI, to type just 'model-switcher')"
 echo "Restart Claude Code sessions to apply."

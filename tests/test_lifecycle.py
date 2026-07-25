@@ -168,3 +168,57 @@ def test_removing_the_middle_model_drops_its_agent_on_reinstall(claude_dir):
     assert "2 tiers" in output
     assert not (claude_dir / "agents" / "mid-task-sonnet.md").exists()
     assert (claude_dir / "agents" / "heavy-task-fable.md").exists()
+
+
+def test_the_cli_is_installed_and_runs_without_the_repo(claude_dir, tmp_path):
+    """The maintenance commands must survive the clone being deleted."""
+    run_installer(claude_dir, "--skip-model")
+    install_dir = claude_dir / "model-switcher"
+    cli = install_dir / "model-switcher"
+    assert cli.exists() and os.access(cli, os.X_OK)
+    for name in ("cli.py", "analyze_history.py", "update_pricing.py", "pricing.json"):
+        assert (install_dir / name).exists(), f"{name} must be installed for the CLI to work"
+
+    # Copy the install somewhere unrelated and run it with the repo nowhere in sight.
+    isolated = tmp_path / "isolated"
+    shutil.copytree(install_dir, isolated)
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+        "MODEL_SWITCHER_HOME": str(isolated),
+    }
+    result = subprocess.run(
+        ["python3", str(isolated / "model-switcher"), "explain", "refactor the auth module"],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "heavy-task" in result.stdout
+
+    priced = subprocess.run(
+        ["python3", str(isolated / "model-switcher"), "pricing", "--offline"],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=60,
+    )
+    assert priced.returncode in (0, 1), priced.stderr
+    assert "pricing" in priced.stdout
+
+
+def test_uninstall_removes_the_cli_and_stale_bytecode(claude_dir):
+    run_installer(claude_dir, "--skip-model")
+    install_dir = claude_dir / "model-switcher"
+    (install_dir / "__pycache__").mkdir(exist_ok=True)
+    (install_dir / "__pycache__" / "cli.cpython-312.pyc").write_bytes(b"stale")
+
+    run_installer(claude_dir, "--uninstall")
+    assert not (install_dir / "model-switcher").exists()
+    assert not (install_dir / "analyze_history.py").exists()
+    assert not (install_dir / "pricing.json").exists()
+    assert not (install_dir / "__pycache__").exists()
+    assert (install_dir / "config.json").exists(), "user config must survive uninstall"
+
+
+def test_a_learned_classifier_survives_uninstall(claude_dir):
+    run_installer(claude_dir, "--skip-model")
+    classifier = claude_dir / "model-switcher" / "classifier.json"
+    classifier.write_text('{"schema_version": 1, "scoring": {"terms": {"refactor": 0.5}}}')
+    run_installer(claude_dir, "--uninstall")
+    assert classifier.exists(), "learned weights are user data, like config.json"
