@@ -317,52 +317,50 @@ def totals(session=1.0, baseline=3.0, turn=0.5, tokens_in=100, tokens_out=10, un
     return {
         "turn": turn, "session": session, "baseline": baseline, "tokens_in": tokens_in,
         "tokens_out": tokens_out, "unknown": unknown or set(), "baseline_model": "claude-fable-5",
+        "models": {"claude-sonnet-5", "claude-fable-5"},
     }
 
 
 class TestBaselineModel:
-    @pytest.mark.parametrize("alias,expected", [
-        ("fable", "claude-fable-5"),
-        ("sonnet", "claude-sonnet-5"),
-        ("claude-sonnet-4-6", "claude-sonnet-4-6"),
-    ])
-    def test_resolves_an_alias_to_a_pricing_key(self, alias, expected):
-        config = {"models": {"complex": alias}, "pricing_usd_per_mtok": TIERED}
-        assert statusline.baseline_model(config, TIERED) == expected
+    def test_picks_the_dearest_model_the_session_actually_ran(self):
+        observed = {"claude-sonnet-5", "claude-fable-5"}
+        assert statusline.baseline_model({}, TIERED, observed) == "claude-fable-5"
 
-    def test_prefers_the_base_id_over_a_dated_variant(self):
-        # Landing on the dearer claude-sonnet-4-6 would overstate savings.
-        config = {"models": {"complex": "sonnet"}, "pricing_usd_per_mtok": TIERED}
-        assert statusline.baseline_model(config, TIERED) == "claude-sonnet-5"
+    def test_ignores_a_model_the_session_never_ran(self):
+        # models.complex names fable, but nothing was delegated to it, so it cannot be the
+        # yardstick: the session's own dearest model is.
+        config = {"models": {"complex": "fable"}}
+        observed = {"claude-sonnet-5", "claude-sonnet-4-6"}
+        assert statusline.baseline_model(config, TIERED, observed) == "claude-sonnet-4-6"
 
     def test_an_explicit_override_wins(self):
-        config = {
-            "models": {"complex": "fable"},
-            "statusline": {"savings_baseline": "claude-sonnet-5"},
-        }
-        assert statusline.baseline_model(config, TIERED) == "claude-sonnet-5"
+        config = {"statusline": {"savings_baseline": "claude-fable-5"}}
+        assert statusline.baseline_model(config, TIERED, {"claude-sonnet-5"}) == "claude-fable-5"
 
     def test_an_override_naming_an_unpriced_model_is_ignored(self):
-        config = {"models": {"complex": "fable"}, "statusline": {"savings_baseline": "nope"}}
-        assert statusline.baseline_model(config, TIERED) == "claude-fable-5"
+        config = {"statusline": {"savings_baseline": "nope"}}
+        assert statusline.baseline_model(config, TIERED, {"claude-sonnet-5"}) == "claude-sonnet-5"
 
-    @pytest.mark.parametrize("models", [
-        {}, {"complex": ""}, {"complex": "   "}, {"complex": None}, {"complex": 5},
-        {"complex": "gpt-4"}, "not-a-dict",
-    ])
-    def test_returns_nothing_when_it_cannot_resolve(self, models):
-        assert statusline.baseline_model({"models": models}, TIERED) is None
+    @pytest.mark.parametrize("observed", [set(), {"gpt-4"}, {""}, {"claude-fable"}])
+    def test_returns_nothing_without_a_priced_candidate(self, observed):
+        assert statusline.baseline_model({}, TIERED, observed) is None
 
-    def test_is_stable_regardless_of_table_order(self):
-        reversed_table = dict(reversed(list(TIERED.items())))
-        config = {"models": {"complex": "sonnet"}}
-        assert statusline.baseline_model(config, TIERED) == statusline.baseline_model(config, reversed_table)
+    def test_breaks_ties_deterministically(self):
+        table = {"model-b": dict(TIERED["claude-sonnet-5"]), "model-a": dict(TIERED["claude-sonnet-5"])}
+        observed = {"model-a", "model-b"}
+        reversed_table = dict(reversed(list(table.items())))
+        assert statusline.baseline_model({}, table, observed) == "model-a"
+        assert statusline.baseline_model({}, reversed_table, observed) == "model-a"
 
 
 class TestSavingsSegment:
-    def test_reports_what_routing_avoided(self):
+    def test_reports_what_routing_avoided_and_names_the_yardstick(self):
         rendered = statusline._segment_saved(totals(session=1.0, baseline=3.0), {})
-        assert "saved" in rendered and "67%" in rendered
+        assert "saved" in rendered and "67%" in rendered and "vs fable-5" in rendered
+
+    def test_omits_the_yardstick_when_it_is_unknown(self):
+        rendered = statusline._segment_saved({**totals(), "baseline_model": None}, {})
+        assert "vs" not in rendered
 
     def test_is_silent_when_nothing_was_saved(self):
         assert statusline._segment_saved(totals(session=3.0, baseline=3.0), {}) is None
@@ -375,6 +373,62 @@ class TestSavingsSegment:
 
     def test_is_silent_below_half_a_cent(self):
         assert statusline._segment_saved(totals(session=1.0, baseline=1.004), {}) is None
+
+
+class TestSavingsCannotBeFabricated:
+    """A single-model session saved nothing, whatever the configured tiers cost.
+
+    The regression this guards: pricing every turn at models.complex produced
+    'saved == session cost' for any session whose model was exactly half that price —
+    a number generated by the rate ratio rather than by any routing decision.
+    """
+
+    def _single_model_totals(self, complex_alias):
+        usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        entries = [{"model": "claude-sonnet-5", "usage": usage, "line": 1}]
+        config = {"models": {"complex": complex_alias, "simple": "sonnet"}}
+        return statusline.summarise(entries, TIERED, config, last_user_line=0)
+
+    @pytest.mark.parametrize("complex_alias", ["fable", "claude-fable-5", "claude-sonnet-4-6"])
+    def test_no_savings_are_claimed_for_a_single_model_session(self, complex_alias):
+        result = self._single_model_totals(complex_alias)
+        assert result["baseline"] == 0.0
+        assert statusline._segment_saved(result, {}) is None
+
+    def test_saved_never_equals_the_session_cost(self):
+        # claude-fable-5 is exactly 2x claude-sonnet-5 on every rate — the shape that
+        # produced the bogus "session $90.05 | saved $90.05 (50%)".
+        result = self._single_model_totals("fable")
+        assert result["session"] > 0
+        assert result["baseline"] - result["session"] != pytest.approx(result["session"])
+
+    def test_an_explicit_override_cannot_resurrect_it(self):
+        usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        entries = [{"model": "claude-sonnet-5", "usage": usage, "line": 1}]
+        config = {"statusline": {"savings_baseline": "claude-fable-5"}}
+        result = statusline.summarise(entries, TIERED, config, last_user_line=0)
+        assert result["baseline"] == 0.0
+
+    def test_savings_appear_once_the_session_genuinely_spans_tiers(self):
+        usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        entries = [
+            {"model": "claude-sonnet-5", "usage": usage, "line": 1},
+            {"model": "claude-fable-5", "usage": usage, "line": 2},
+        ]
+        result = statusline.summarise(entries, TIERED, {}, last_user_line=0)
+        # $12 on sonnet + $60 on fable = $72 actual; all-fable would have been $120.
+        assert result["session"] == pytest.approx(72.0)
+        assert result["baseline"] == pytest.approx(120.0)
+        assert "saved $48.00 (40% vs fable-5)" == statusline._segment_saved(result, {})
+
+    def test_an_unpriced_model_does_not_count_as_a_second_tier(self):
+        usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        entries = [
+            {"model": "claude-sonnet-5", "usage": usage, "line": 1},
+            {"model": "claude-unknown-9", "usage": usage, "line": 2},
+        ]
+        result = statusline.summarise(entries, TIERED, {}, last_user_line=0)
+        assert result["baseline"] == 0.0 and result["unknown"] == {"claude-unknown-9"}
 
 
 class TestRoutingSegment:
@@ -424,26 +478,37 @@ class TestSegmentSelection:
 
 
 class TestDashboardLine:
-    def _session(self, tmp_path, home, config_extra=None):
+    def _session(self, tmp_path, home, config_extra=None, models=("claude-sonnet-5", "claude-fable-5")):
         write_config(home, TIERED)
         config = json.loads((home / "config.json").read_text())
         config.update(config_extra or {})
         (home / "config.json").write_text(json.dumps(config))
         usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
-        lines = [
-            transcript_line("user"),
-            transcript_line("assistant", msg_id="a", model="claude-sonnet-5", usage=usage),
+        lines = [transcript_line("user")]
+        lines += [
+            transcript_line("assistant", msg_id=f"a{i}", model=model, usage=usage)
+            for i, model in enumerate(models)
         ]
         return stdin_payload(write_transcript(tmp_path, lines))
 
-    def test_shows_savings_against_the_heavy_model(self, tmp_path, home):
+    def test_shows_savings_against_the_dearest_model_the_session_ran(self, tmp_path, home):
         payload = self._session(tmp_path, home, {"models": {"complex": "fable", "simple": "sonnet"}})
         line = statusline.run(payload)
-        # 1M in + 1M out on sonnet-5 is $12; on fable-5 it would have been $60.
-        assert "saved $48.00 (80%)" in line
+        # 1M in + 1M out costs $12 on sonnet-5 and $60 on fable-5; all-fable would be $120.
+        assert "saved $48.00 (40% vs fable-5)" in line
 
-    def test_omits_savings_when_the_session_ran_on_the_heavy_model(self, tmp_path, home):
-        payload = self._session(tmp_path, home, {"models": {"complex": "sonnet", "simple": "sonnet"}})
+    def test_omits_savings_when_the_session_never_left_one_model(self, tmp_path, home):
+        payload = self._session(
+            tmp_path, home, {"models": {"complex": "fable", "simple": "sonnet"}},
+            models=("claude-sonnet-5",),
+        )
+        assert "saved" not in statusline.run(payload)
+
+    def test_omits_savings_when_the_session_ran_only_on_the_heavy_model(self, tmp_path, home):
+        payload = self._session(
+            tmp_path, home, {"models": {"complex": "fable", "simple": "sonnet"}},
+            models=("claude-fable-5", "claude-fable-5"),
+        )
         assert "saved" not in statusline.run(payload)
 
     def test_keeps_reporting_turn_session_and_tokens(self, tmp_path, home):
