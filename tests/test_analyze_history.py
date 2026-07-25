@@ -116,6 +116,30 @@ class TestIterTurns:
     def test_returns_nothing_for_an_unreadable_file(self, tmp_path):
         assert list(learn.iter_turns(tmp_path / "absent.jsonl")) == []
 
+    def test_keeps_the_raw_usage_of_each_turn_for_re_pricing(self, tmp_path):
+        path = write_transcript(tmp_path, "t", [
+            user("refactor it"),
+            {"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 10, "output_tokens": 20}}},
+            {"type": "assistant", "message": {"id": "m2", "usage": {"input_tokens": 5, "output_tokens": 1}}},
+        ])
+        (result,) = list(learn.iter_turns(path))
+        assert [u["input_tokens"] for u in result["usage"].values()] == [10, 5]
+
+    def test_counts_a_streamed_message_once(self, tmp_path):
+        """Streaming rewrites the same message id; only the last entry carries final usage."""
+        path = write_transcript(tmp_path, "t", [
+            user("refactor it"),
+            {"type": "assistant", "message": {"id": "m1", "usage": {"output_tokens": 5}}},
+            {"type": "assistant", "message": {"id": "m1", "usage": {"output_tokens": 40}}},
+        ])
+        (result,) = list(learn.iter_turns(path))
+        assert [u["output_tokens"] for u in result["usage"].values()] == [40]
+
+    def test_keeps_entries_that_carry_no_identifier_apart(self, tmp_path):
+        path = write_transcript(tmp_path, "t", [user("p"), assistant(output=7), assistant(output=9)])
+        (result,) = list(learn.iter_turns(path))
+        assert sorted(u["output_tokens"] for u in result["usage"].values()) == [7, 9]
+
 
 class TestLabelling:
     @pytest.mark.parametrize("text", ["yes", "go ahead", "ok", "proceed", "yes please continue"])

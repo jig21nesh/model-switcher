@@ -176,7 +176,7 @@ def test_the_cli_is_installed_and_runs_without_the_repo(claude_dir, tmp_path):
     install_dir = claude_dir / "model-switcher"
     cli = install_dir / "model-switcher"
     assert cli.exists() and os.access(cli, os.X_OK)
-    for name in ("cli.py", "analyze_history.py", "update_pricing.py", "pricing.json"):
+    for name in ("cli.py", "analyze_history.py", "update_pricing.py", "tune_threshold.py", "pricing.json"):
         assert (install_dir / name).exists(), f"{name} must be installed for the CLI to work"
 
     # Copy the install somewhere unrelated and run it with the repo nowhere in sight.

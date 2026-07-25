@@ -94,7 +94,8 @@ cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/hooks/agent_router.py" "$RE
 # clone is deleted. Copied flat; bin/model-switcher handles both layouts.
 cp "$REPO_DIR/scripts/cli.py" "$REPO_DIR/scripts/analyze_history.py" \
   "$REPO_DIR/scripts/update_pricing.py" "$REPO_DIR/scripts/generate_agent.py" \
-  "$REPO_DIR/scripts/uninstall.py" "$REPO_DIR/scripts/status_report.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
+  "$REPO_DIR/scripts/uninstall.py" "$REPO_DIR/scripts/status_report.py" \
+  "$REPO_DIR/scripts/tune_threshold.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
 cp "$REPO_DIR/bin/model-switcher" "$INSTALL_DIR/model-switcher"
 chmod +x "$INSTALL_DIR/model-switcher"
 [ -f "$CONFIG" ] || cp "$REPO_DIR/config/config.example.json" "$CONFIG"
@@ -148,6 +149,7 @@ echo "  cli:        $INSTALL_DIR/model-switcher (works without this repo)"
 echo "Next:"
 echo "  $INSTALL_DIR/model-switcher explain \"<a prompt>\"   how a prompt scores and where it routes"
 echo "  $INSTALL_DIR/model-switcher learn                  tune routing from your own history"
+echo "  $INSTALL_DIR/model-switcher tune                   what your history says about the threshold"
 echo "  $INSTALL_DIR/model-switcher pricing                check your token rates"
 echo "  (add $INSTALL_DIR to PATH, or symlink the CLI, to type just 'model-switcher')"
 echo "Restart Claude Code sessions to apply."
