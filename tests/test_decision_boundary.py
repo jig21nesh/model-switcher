@@ -146,7 +146,16 @@ class TestRenderRouted:
             "refactor the naplan schema and migrate the api", terms={"naplan": 1.0},
             topical=frozenset({"naplan"}),
         )
-        assert "topical: seen in only one project" in out
+        assert "topical: seen in only one project" in out and "does the full pass" in out
+
+    def test_says_nothing_about_sampling_when_no_mark_was_printed(self):
+        """A topical term the lists never reached must not leave a footnote pointing at nothing."""
+        terms = {f"term{n}": 1.0 + n / 10 for n in range(8)} | {"naplan": 0.35}
+        out = render(
+            "refactor the naplan schema: " + " ".join(f"term{n}" for n in range(8)),
+            terms=terms, topical=frozenset({"naplan"}),
+        )
+        assert "topical" not in out
 
     def test_notes_that_a_score_sits_exactly_on_the_threshold(self):
         out = render("fix the failing api test", config={**TWO_TIER, "complexity": {"threshold": 3}})

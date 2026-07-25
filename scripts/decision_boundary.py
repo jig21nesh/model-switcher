@@ -119,20 +119,21 @@ def _mark(term: str | None, topical) -> str:
     return "   topical: seen in only one project" if term in topical else ""
 
 
-def _render_carried(detail: dict, classifier: dict, config: dict, topical, echo) -> None:
+def _render_carried(detail: dict, classifier: dict, config: dict, topical, echo) -> bool:
     items = contributions(detail)
+    shown = items[:MAX_LISTED]
     echo("    what carried it there")
-    for item in items[:MAX_LISTED]:
+    for item in shown:
         echo(f"      {item.label:<44}{item.value:>+7.2f}{_mark(item.term, topical)}")
     if len(items) > MAX_LISTED:
         echo(f"      ... and {len(items) - MAX_LISTED} more")
 
     largest = next((item for item in items if item.value > 0), None)
-    if largest is None:
-        return
-    without = score_without(detail, classifier, largest)
-    landing = _destination(router.select_tier(without, config), config)
-    echo(f"    without {largest.label} ({largest.value:+g}) it scores {without} — {landing}")
+    if largest is not None:
+        without = score_without(detail, classifier, largest)
+        landing = _destination(router.select_tier(without, config), config)
+        echo(f"    without {largest.label} ({largest.value:+g}) it scores {without} — {landing}")
+    return any(item.term in topical for item in shown)
 
 
 def _render_flip(prompt: str, detail: dict, classifier: dict, config: dict, echo) -> None:
@@ -148,7 +149,7 @@ def _render_flip(prompt: str, detail: dict, classifier: dict, config: dict, echo
         echo("      none of these cross the edge on their own")
 
 
-def _render_holding_back(detail: dict, classifier: dict, topical, echo) -> None:
+def _render_holding_back(detail: dict, classifier: dict, topical, echo) -> bool:
     lines = []
     if detail["caps"]:
         uncapped = router.final_score(detail["base"], detail["learned"], [])
@@ -157,15 +158,17 @@ def _render_holding_back(detail: dict, classifier: dict, topical, echo) -> None:
     negatives = sorted(
         (item for item in contributions(detail) if item.value < 0), key=lambda item: item.value
     )
-    for item in negatives[:MAX_LISTED]:
+    shown = negatives[:MAX_LISTED]
+    for item in shown:
         lines.append(f"{item.label:<44}{item.value:>+7.2f}{_mark(item.term, topical)}")
     if not detail["signals"]:
         lines.append("no built-in signal matched, so the score started at 0")
     if not lines:
-        return
+        return False
     echo("    what is holding it back")
     for line in lines:
         echo(f"      {line}")
+    return any(item.term in topical for item in shown)
 
 
 def render(prompt: str, detail: dict, config: dict, classifier: dict, topical=frozenset(), echo=print) -> None:
@@ -185,11 +188,13 @@ def render(prompt: str, detail: dict, config: dict, classifier: dict, topical=fr
         echo(f"    {_points(-gap)} short of the {router.TIER_LABELS[tier]} threshold ({edge:g}), "
              "the nearest routing edge")
 
+    marked = False
     if routed:
-        _render_carried(detail, classifier, config, topical, echo)
+        marked = _render_carried(detail, classifier, config, topical, echo)
     else:
         _render_flip(prompt, detail, classifier, config, echo)
-    _render_holding_back(detail, classifier, topical, echo)
-    if topical:
+    # Only footnote a mark that was actually printed: a topical term the lists did not reach
+    # would leave the reader looking for something that is not there.
+    if _render_holding_back(detail, classifier, topical, echo) or marked:
         echo("    topical terms come from a sample of your transcripts — "
              "'model-switcher classifier' does the full pass")
