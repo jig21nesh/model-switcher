@@ -142,4 +142,7 @@ fi
 if [ "$SKIP_MODEL" -eq 0 ]; then echo "  session model set to: $SIMPLE_MODEL (previous value saved in $MANIFEST)"; fi
 echo "  config:     $CONFIG"
 echo "              (pricing ships pre-filled; refresh it with ./bin/model-switcher pricing)"
+echo "Next:"
+echo "  ./bin/model-switcher explain \"<a prompt>\"   see how a prompt scores and where it routes"
+echo "  ./bin/model-switcher learn                  tune routing from your own history"
 echo "Restart Claude Code sessions to apply."

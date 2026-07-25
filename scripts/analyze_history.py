@@ -64,14 +64,15 @@ SMOOTHING = 0.5
 # survives ("don", not "don't"). And it is deliberately not a pure function-word list: request-shaped
 # verbs like "need", "ensure" and "confirm" measurably predict real work, so they are kept.
 STOPWORDS = frozenset("""
-about above after again all also always any are aren around because been before being below
-best better both but can couldn could did didn does doesn doing done don down
-each end ended ends even ever every few first for from further get got had has hasn have haven having her
-here hers him his how into isn its just know knew knows last let lets look looked
-looks made make many may maybe might more most much must never new next not now off often okay old
-once one only other others ought our ours out over own perhaps please quite rather really same saw
-see sees she should shouldn since some start started starts still such sure than thank thanks that
-the their theirs them then there these they thing things think thinks thought three those through
+about above after again all also always and another any anyone anything are aren around because
+been before being below best better both but can couldn could did didn does doesn doing done don down
+each end ended ends even ever every everyone everything few first for from further get got had has
+hasn have haven having her here hers herself him himself his how into isn its itself just know knew
+knows last let lets like look looked looks made make many may maybe might more most much must myself
+never new next nor not nothing now off often okay old once one only onto other others ought our ours
+out over own perhaps please quite rather really same saw see sees shall she should shouldn since
+some someone something start started starts still such sure than thank thanks that the their theirs
+them themselves then there these they thing things think thinks thought this three those through
 time times too two under until use used uses very want wanted wants was wasn way ways were weren
 what when where which while who whom whose why will with won would wouldn yeah yes yet you
 your yours

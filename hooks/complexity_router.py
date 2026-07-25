@@ -28,6 +28,17 @@ STATE_MAX_AGE_SECONDS = 7 * 24 * 3600
 SESSION_ID_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 MODEL_NAME_RE = re.compile(r"[A-Za-z0-9._\[\]-]{1,64}")
 
+# Learned weights produced by scripts/analyze_history.py. The format, and the tokenizer below,
+# are specified in docs/classifier-schema.md — keep the two in step (tests assert they agree).
+CLASSIFIER_SCHEMA_VERSION = 1
+CLASSIFIER_MAX_BYTES = 512 * 1024
+CLASSIFIER_MAX_TERMS = 1000
+CLASSIFIER_TERM_RE = re.compile(r"^[a-z][a-z0-9-]{2,23}$")
+CLASSIFIER_SPLIT_RE = re.compile(r"[^a-z0-9-]+")
+# Hard ceiling on how far learned weights may move a score, whatever the artifact claims. The
+# hand-tuned signals keep authority: a skewed or hostile classifier cannot dominate them.
+CLASSIFIER_MAX_ADJUSTMENT = 3.0
+
 STRONG_KEYWORDS = (
     "refactor", "architect", "architecture", "redesign", "implement", "migrate", "migration",
     "rewrite", "overhaul", "scaffold", "debug", "investigate", "integrate", "audit",
@@ -169,7 +180,24 @@ def _strong_hits(text: str) -> list[str]:
     return hits
 
 
-def score_prompt(prompt: str) -> int:
+def classifier_terms(text: str) -> set[str]:
+    """Tokenize exactly as docs/classifier-schema.md specifies, so artifacts are portable."""
+    tokens = CLASSIFIER_SPLIT_RE.split(text[:SCORE_MAX_CHARS].lower())
+    return {t for t in (token.strip("-") for token in tokens) if CLASSIFIER_TERM_RE.match(t)}
+
+
+def learned_adjustment(text: str, classifier: dict) -> tuple[float, dict[str, float]]:
+    """Bounded contribution from learned weights, plus the terms that produced it."""
+    weights = classifier.get("terms") or {}
+    if not weights:
+        return 0.0, {}
+    matched = {term: weights[term] for term in classifier_terms(text) if term in weights}
+    limit = classifier.get("max_adjustment", CLASSIFIER_MAX_ADJUSTMENT)
+    return max(-limit, min(limit, sum(matched.values()))), matched
+
+
+def analyse_prompt(prompt: str, classifier: dict | None = None) -> dict:
+    """Score a prompt and record why, so `explain` and routing can never disagree."""
     truncated = len(prompt) > SCORE_MAX_CHARS
     text = prompt[:SCORE_MAX_CHARS].lower()
     tokens = text.split()
@@ -177,34 +205,86 @@ def score_prompt(prompt: str) -> int:
     strong = _strong_hits(text)
     moderate = [k for k, p in MODERATE_PATTERNS if p.search(text)]
 
-    score = 0
+    signals: list[tuple[str, int]] = []
     if strong:
-        score += 5 + min(len(strong) - 1, 2)
-    score += min(len(moderate), 3)
+        signals.append((f"task verbs ({', '.join(strong[:3])})", 5 + min(len(strong) - 1, 2)))
+    if moderate:
+        signals.append((f"domain terms ({', '.join(moderate[:3])})", min(len(moderate), 3)))
     if truncated or words >= 150:
-        score += 2
+        signals.append(("long prompt", 2))
     elif words >= 50:
-        score += 1
+        signals.append(("medium prompt", 1))
     if len(NUMBERED_STEP_RE.findall(text)) >= 2:
-        score += 2
+        signals.append(("numbered steps", 2))
     if sum(text.count(c) for c in CONNECTIVES) >= 2:
-        score += 1
+        signals.append(("chained requests", 1))
     if "```" in text:
-        score += 1
+        signals.append(("code block", 1))
     if sum(1 for t in tokens if EXT_RE.match(t.rstrip(".,;:!?)\"'"))) >= 2:
-        score += 1
+        signals.append(("multiple file paths", 1))
     if TRACEBACK_RE.search(text):
-        score += 3
+        signals.append(("stack trace", 3))
+
+    base = sum(points for _, points in signals)
+    adjustment, matched = learned_adjustment(text, classifier) if classifier else (0.0, {})
+    score = base + adjustment
 
     # Short pure questions without a task verb are lookups; definitional questions are lookups
     # even when they mention task vocabulary; short affirmations continue in-session work.
+    # These run after the learned adjustment so that learned weights cannot talk a lookup
+    # into being delegated.
+    caps = []
     if words < 25 and text.rstrip().endswith("?") and not strong:
-        score = min(score, 2)
+        caps.append("short question")
     if words < 25 and DEFINITIONAL_RE.search(text):
-        score = min(score, 2)
+        caps.append("definitional question")
     if words <= 12 and AFFIRMATION_RE.match(text):
+        caps.append("affirmation")
+    if caps:
         score = min(score, 2)
-    return max(0, min(score, 10))
+
+    return {
+        "signals": signals,
+        "base": base,
+        "learned": round(adjustment, 2),
+        "matched_terms": matched,
+        "caps": caps,
+        "score": max(0, min(int(round(score)), 10)),
+    }
+
+
+def score_prompt(prompt: str, classifier: dict | None = None) -> int:
+    return analyse_prompt(prompt, classifier)["score"]
+
+
+def load_classifier() -> dict:
+    """Read learned weights, or return nothing at all. Never raises, never blocks a prompt."""
+    path = home_dir() / "classifier.json"
+    try:
+        if path.stat().st_size > CLASSIFIER_MAX_BYTES:
+            logger.warning("classifier is larger than %s bytes, ignoring it", CLASSIFIER_MAX_BYTES)
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("schema_version") != CLASSIFIER_SCHEMA_VERSION:
+        return {}
+    scoring = data.get("scoring")
+    if not isinstance(scoring, dict) or not isinstance(scoring.get("terms"), dict):
+        return {}
+
+    weights = {}
+    for term, weight in scoring["terms"].items():
+        if len(weights) >= CLASSIFIER_MAX_TERMS:
+            break
+        # Terms came from prompt text: they are matched as plain strings, never compiled.
+        if isinstance(term, str) and CLASSIFIER_TERM_RE.match(term) and _is_number(weight):
+            weights[term] = float(weight)
+
+    limit = scoring.get("max_adjustment", CLASSIFIER_MAX_ADJUSTMENT)
+    if not _is_number(limit) or not 0 < limit <= CLASSIFIER_MAX_ADJUSTMENT:
+        limit = CLASSIFIER_MAX_ADJUSTMENT
+    return {"terms": weights, "max_adjustment": float(limit)} if weights else {}
 
 
 def _numeric_setting(complexity: dict, key: str, default: int) -> float:
@@ -374,7 +454,7 @@ def build_context(prompt: str, session_id: str, config: dict) -> str:
             state["models_nagged"] = True
             state_dirty = True
     else:
-        score = score_prompt(prompt)
+        score = score_prompt(prompt, load_classifier())
         tier = select_tier(score, config)
         if tier is not None:
             parts.append(delegation_directive(score, tier, config))
