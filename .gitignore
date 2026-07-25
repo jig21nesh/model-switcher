@@ -6,3 +6,4 @@ __pycache__/
 coverage.json
 htmlcov/
 .DS_Store
+.demo-capture/
