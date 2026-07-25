@@ -37,7 +37,8 @@ Options:
 
 Configuration:  $CLAUDE_DIR/model-switcher/config.json
                 (models.complex/simple, routing.enabled, complexity.threshold, pricing_usd_per_mtok)
-Pricing rates:  https://claude.com/pricing
+Pricing rates:  ships pre-filled; check or refresh with ./bin/model-switcher pricing
+                (source of truth: config/pricing.json in this repo)
 Documentation:  https://github.com/jig21nesh/model-switcher
 
 Restart Claude Code sessions after installing or uninstalling.
@@ -119,5 +120,6 @@ if [ -f "$CLAUDE_DIR/CLAUDE.md.model-switcher.bak" ]; then
   echo "              (pre-install backup: $CLAUDE_DIR/CLAUDE.md.model-switcher.bak)"
 fi
 if [ "$SKIP_MODEL" -eq 0 ]; then echo "  session model set to: $SIMPLE_MODEL (previous value saved in $MANIFEST)"; fi
-echo "  config:     $CONFIG  <- set your pricing here (rates: https://claude.com/pricing)"
+echo "  config:     $CONFIG"
+echo "              (pricing ships pre-filled; refresh it with ./bin/model-switcher pricing)"
 echo "Restart Claude Code sessions to apply."

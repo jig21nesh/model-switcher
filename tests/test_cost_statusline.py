@@ -202,3 +202,105 @@ class TestFormatting:
         assert statusline.format_tokens(950) == "950"
         assert statusline.format_tokens(12_400) == "12.4k"
         assert statusline.format_tokens(2_500_000) == "2.5M"
+
+
+RATES_WITH_TTL = {
+    "input": 5.0, "output": 25.0, "cache_write": 6.25, "cache_write_1h": 10.0, "cache_read": 0.5,
+}
+RATES_LEGACY = {"input": 5.0, "output": 25.0, "cache_write": 6.25, "cache_read": 0.5}
+
+
+class TestCacheWriteTtlSplit:
+    """Claude Code caches with a 1-hour TTL, which costs 2x input rather than 1.25x."""
+
+    def test_splits_a_breakdown_into_ttl_buckets(self):
+        usage = {
+            "cache_creation_input_tokens": 300,
+            "cache_creation": {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200},
+        }
+        assert statusline.cache_write_tokens(usage) == (100, 200, 0)
+
+    def test_falls_back_to_the_flat_total_when_no_breakdown_exists(self):
+        assert statusline.cache_write_tokens({"cache_creation_input_tokens": 300}) == (0, 0, 300)
+
+    def test_falls_back_when_the_breakdown_is_present_but_empty(self):
+        usage = {
+            "cache_creation_input_tokens": 300,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+        }
+        assert statusline.cache_write_tokens(usage) == (0, 0, 300)
+
+    def test_the_breakdown_wins_when_it_disagrees_with_the_flat_total(self):
+        # Some real entries carry a total that is smaller than the breakdown beside it.
+        # Mixing the two would produce a negative bucket.
+        usage = {
+            "cache_creation_input_tokens": 91451,
+            "cache_creation": {"ephemeral_1h_input_tokens": 119626, "ephemeral_5m_input_tokens": 0},
+        }
+        five, hour, unsplit = statusline.cache_write_tokens(usage)
+        assert (five, hour, unsplit) == (0, 119626, 0)
+        assert min(five, hour, unsplit) >= 0
+
+    @pytest.mark.parametrize("breakdown", ["nope", 5, [1, 2], None, {"ephemeral_1h_input_tokens": "lots"}])
+    def test_survives_a_malformed_breakdown(self, breakdown):
+        usage = {"cache_creation_input_tokens": 300, "cache_creation": breakdown}
+        assert statusline.cache_write_tokens(usage) == (0, 0, 300)
+
+    def test_one_hour_writes_cost_more_than_five_minute_writes(self):
+        five = {"cache_creation": {"ephemeral_5m_input_tokens": 1_000_000, "ephemeral_1h_input_tokens": 0}}
+        hour = {"cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 1_000_000}}
+        assert statusline.usage_cost(five, RATES_WITH_TTL) == pytest.approx(6.25)
+        assert statusline.usage_cost(hour, RATES_WITH_TTL) == pytest.approx(10.0)
+
+    def test_a_config_without_a_one_hour_rate_prices_exactly_as_before(self):
+        usage = {"cache_creation": {"ephemeral_1h_input_tokens": 1_000_000, "ephemeral_5m_input_tokens": 0}}
+        legacy_equivalent = {"cache_creation_input_tokens": 1_000_000}
+        assert statusline.usage_cost(usage, RATES_LEGACY) == statusline.usage_cost(
+            legacy_equivalent, RATES_LEGACY
+        )
+
+
+class TestFastMode:
+    def test_fast_turns_use_the_fast_rate_block(self):
+        rates = {**RATES_WITH_TTL, "fast": {**RATES_WITH_TTL, "output": 50.0}}
+        usage = {"output_tokens": 1_000_000, "speed": "fast"}
+        assert statusline.usage_cost(usage, statusline.effective_rates(usage, rates)) == pytest.approx(50.0)
+
+    def test_standard_turns_use_the_base_rates(self):
+        rates = {**RATES_WITH_TTL, "fast": {**RATES_WITH_TTL, "output": 50.0}}
+        usage = {"output_tokens": 1_000_000, "speed": "standard"}
+        assert statusline.usage_cost(usage, statusline.effective_rates(usage, rates)) == pytest.approx(25.0)
+
+    def test_a_fast_turn_without_a_fast_rate_block_falls_back_to_base(self):
+        usage = {"output_tokens": 1_000_000, "speed": "fast"}
+        assert statusline.effective_rates(usage, RATES_WITH_TTL) is RATES_WITH_TTL
+
+    def test_a_malformed_fast_block_is_ignored(self):
+        rates = {**RATES_WITH_TTL, "fast": "premium"}
+        usage = {"speed": "fast"}
+        assert statusline.effective_rates(usage, rates) is rates
+
+
+class TestRateValidation:
+    @pytest.mark.parametrize("bad", [True, False, -1, float("inf"), float("nan"), "5.0", None, 1e9])
+    def test_rejects_a_model_whose_rate_is_not_a_usable_number(self, bad):
+        config = {"pricing_usd_per_mtok": {"m": {**RATES_LEGACY, "input": bad}}}
+        assert statusline.usable_pricing(config) == {}
+
+    def test_carries_the_optional_one_hour_rate_through(self):
+        config = {"pricing_usd_per_mtok": {"m": dict(RATES_WITH_TTL)}}
+        assert statusline.usable_pricing(config)["m"]["cache_write_1h"] == 10.0
+
+    def test_drops_an_unusable_one_hour_rate_but_keeps_the_model(self):
+        config = {"pricing_usd_per_mtok": {"m": {**RATES_LEGACY, "cache_write_1h": "free"}}}
+        rates = statusline.usable_pricing(config)["m"]
+        assert "cache_write_1h" not in rates and rates["input"] == 5.0
+
+    def test_drops_an_unusable_fast_block_but_keeps_the_model(self):
+        config = {"pricing_usd_per_mtok": {"m": {**RATES_LEGACY, "fast": {"input": 1}}}}
+        rates = statusline.usable_pricing(config)["m"]
+        assert "fast" not in rates and rates["output"] == 25.0
+
+    def test_a_zero_rate_is_allowed(self):
+        config = {"pricing_usd_per_mtok": {"m": {**RATES_LEGACY, "cache_read": 0}}}
+        assert statusline.usable_pricing(config)["m"]["cache_read"] == 0.0

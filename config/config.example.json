@@ -13,10 +13,20 @@
     "wrap_command": null
   },
   "pricing_usd_per_mtok": {
-    "claude-fable-5": { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_read": 1.00 },
-    "claude-opus-4-8": { "input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_read": 0.50 },
-    "claude-sonnet-5": { "input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30 },
-    "claude-haiku-4-5": { "input": 1.00, "output": 5.00, "cache_write": 1.25, "cache_read": 0.10 }
+    "claude-fable-5": { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00 },
+    "claude-mythos-5": { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00 },
+    "claude-opus-5": {
+      "input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_write_1h": 10.00, "cache_read": 0.50,
+      "fast": { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00 }
+    },
+    "claude-opus-4-8": { "input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_write_1h": 10.00, "cache_read": 0.50 },
+    "claude-opus-4-7": { "input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_write_1h": 10.00, "cache_read": 0.50 },
+    "claude-opus-4-6": { "input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_write_1h": 10.00, "cache_read": 0.50 },
+    "claude-sonnet-5": { "input": 2.00, "output": 10.00, "cache_write": 2.50, "cache_write_1h": 4.00, "cache_read": 0.20 },
+    "claude-sonnet-4-6": { "input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_write_1h": 6.00, "cache_read": 0.30 },
+    "claude-haiku-4-5": { "input": 1.00, "output": 5.00, "cache_write": 1.25, "cache_write_1h": 2.00, "cache_read": 0.10 }
   },
-  "pricing_reference": "https://claude.com/pricing"
+  "pricing_updated": "2026-07-25",
+  "pricing_reference": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "pricing_notes": "USD per million tokens. cache_write is the 5-minute-TTL rate (1.25x input); cache_write_1h is the 1-hour rate (2x input) and matters because Claude Code uses 1-hour caching heavily. claude-sonnet-5 shows introductory pricing through 2026-08-31, then 3.00/15.00/3.75/6.00/0.30. Refresh with ./bin/model-switcher pricing."
 }
