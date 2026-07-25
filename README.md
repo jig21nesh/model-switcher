@@ -83,10 +83,10 @@ command all land in `~/.claude` — **after which the repo is no longer needed**
 on your own history and reports the accuracy change. The statusline prices every turn offline and
 shows what routing saved.
 
-*All three GIFs replay genuine captured output — `tools/capture_demo.sh` runs the real installer and
-CLI in a sandbox, and `tools/make_demo_gif.py` types the result back. The `learn` term lists are
-withheld from the recording because they are derived from whatever the operator happened to be
-working on.*
+*Both recordings above replay genuine captured output — `tools/capture_demo.sh` runs the real
+installer and CLI in a sandbox, and `tools/make_demo_gif.py` types the result back. The `learn`
+term lists are withheld from the recording because they are derived from whatever the operator
+happened to be working on.*
 
 ---
 
