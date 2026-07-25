@@ -133,13 +133,9 @@ echo "model-switcher installed:"
 echo "  hook:       UserPromptSubmit -> $INSTALL_DIR/complexity_router.py"
 echo "  statusline: $INSTALL_DIR/cost_statusline.py"
 echo "  ${AGENT_INFO}"
-if [ -n "$STANDARD_AGENT_INFO" ]; then
-  echo "  ${STANDARD_AGENT_INFO}"
-  echo "  routing:    3 tiers — simple in-session, moderate -> mid-task, complex -> heavy-task"
-else
-  echo "  routing:    2 tiers — simple in-session, complex -> heavy-task"
-  echo "              (set models.standard in config.json and re-run for a middle tier)"
-fi
+if [ -n "$STANDARD_AGENT_INFO" ]; then echo "  ${STANDARD_AGENT_INFO}"; fi
+# The ladder is described once, in Python, so what is printed here is what the router will do.
+"$INSTALL_DIR/model-switcher" tiers --config "$CONFIG"
 echo "  policy:     managed block in $CLAUDE_DIR/CLAUDE.md"
 if [ -f "$CLAUDE_DIR/CLAUDE.md.model-switcher.bak" ]; then
   echo "              (pre-install backup: $CLAUDE_DIR/CLAUDE.md.model-switcher.bak)"
