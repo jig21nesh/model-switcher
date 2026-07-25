@@ -355,6 +355,13 @@ Installer options:
 ./install.sh                # full install (also sets session model to models.simple)
 ./install.sh --skip-model   # install hook/statusline/agent but leave your session model alone
 ./install.sh --uninstall    # remove everything it added; restores your previous statusline and model
+```
+
+You do not need the repo to remove it later — the installed CLI can do it:
+
+```sh
+model-switcher uninstall          # show what would be removed, change nothing
+model-switcher uninstall --yes    # do it
 ./install.sh --help         # full option reference and what gets installed where
 ```
 
@@ -581,7 +588,10 @@ Re-run `./install.sh` — this regenerates the `heavy-task-*` agent and updates 
 
 ### I want my old setup back
 
-`./install.sh --uninstall` restores your previous statusline and session model from the manifest and removes the CLAUDE.md block. Your `config.json` is kept.
+`./install.sh --uninstall` from the repo, or `model-switcher uninstall --yes` from the install
+itself, restores your previous statusline and session model from the manifest and removes the
+CLAUDE.md block. Both run the same code. Your `config.json` and any learned `classifier.json` are
+kept — they are your data, not the tool's.
 
 ---
 

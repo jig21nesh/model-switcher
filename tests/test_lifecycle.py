@@ -222,3 +222,30 @@ def test_a_learned_classifier_survives_uninstall(claude_dir):
     classifier.write_text('{"schema_version": 1, "scoring": {"terms": {"refactor": 0.5}}}')
     run_installer(claude_dir, "--uninstall")
     assert classifier.exists(), "learned weights are user data, like config.json"
+
+
+def test_uninstall_works_from_the_install_with_no_repo(claude_dir, tmp_path):
+    """Someone who deletes the clone must still be able to remove the tool."""
+    settings = claude_dir / "settings.json"
+    settings.write_text(json.dumps(EXISTING_SETTINGS, indent=2) + "\n", encoding="utf-8")
+    run_installer(claude_dir, "--skip-model")
+
+    install_dir = claude_dir / "model-switcher"
+    (install_dir / "classifier.json").write_text('{"schema_version": 1}', encoding="utf-8")
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "MODEL_SWITCHER_HOME": str(install_dir)}
+
+    dry = subprocess.run(
+        ["python3", str(install_dir / "model-switcher"), "uninstall"],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=60,
+    )
+    assert dry.returncode == 1 and json.loads(settings.read_text())["hooks"]
+
+    done = subprocess.run(
+        ["python3", str(install_dir / "model-switcher"), "uninstall", "--yes"],
+        capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(settings.read_text(encoding="utf-8")) == EXISTING_SETTINGS
+    assert not list((claude_dir / "agents").glob("*.md"))
+    assert not (install_dir / "model-switcher").exists()
+    assert (install_dir / "config.json").exists() and (install_dir / "classifier.json").exists()

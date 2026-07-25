@@ -14,6 +14,7 @@ from pathlib import Path
 
 import analyze_history
 import complexity_router
+import uninstall as uninstall_module
 import update_pricing
 
 
@@ -114,6 +115,21 @@ def cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    install_dir = home_dir()
+    claude_dir = args.claude_dir or install_dir.parent
+    if not (install_dir / "installed.json").exists():
+        print(f"nothing installed at {install_dir}", file=sys.stderr)
+        return 2
+    if not args.yes:
+        print(f"This removes the hook, statusline, agents and CLAUDE.md block from {claude_dir},")
+        print(f"and the installed files in {install_dir}.")
+        print("Your config.json and any learned classifier are kept.")
+        print("\nRe-run with --yes to go ahead.")
+        return 1
+    return uninstall_module.main(["--claude-dir", str(claude_dir), "--install-dir", str(install_dir)])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="model-switcher", description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -150,6 +166,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-classifier", action="store_true", help="score with the built-in signals only"
     )
     explain.set_defaults(handler=cmd_explain)
+
+    remove = subcommands.add_parser(
+        "uninstall",
+        help="remove everything the installer added, without needing the repo",
+    )
+    remove.add_argument("--claude-dir", type=Path, default=None, help=argparse.SUPPRESS)
+    remove.add_argument("--yes", action="store_true", help="actually do it (default is a dry run)")
+    remove.set_defaults(handler=cmd_uninstall)
 
     return parser
 
