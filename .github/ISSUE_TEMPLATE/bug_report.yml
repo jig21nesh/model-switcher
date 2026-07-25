@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in the router, statusline, or installer behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste real prompt text, API keys, or anything confidential. A minimal
+        made-up prompt that reproduces the same behaviour is more useful anyway.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - Routing (prompt scored wrong / not delegated)
+        - Statusline (cost or display)
+        - Installer (install, uninstall, settings, CLAUDE.md)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        For routing issues, the dry-run output is the single most useful thing you can include:
+
+        ```sh
+        echo '{"prompt":"<a prompt that reproduces it>","session_id":"bug"}' \
+          | python3 ~/.claude/model-switcher/complexity_router.py
+        ```
+
+        For statusline issues:
+
+        ```sh
+        echo '{"model":{"display_name":"Sonnet 5"}}' \
+          | python3 ~/.claude/model-switcher/cost_statusline.py
+        ```
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Your config
+      description: "`~/.claude/model-switcher/config.json` — models, routing and complexity sections are usually enough."
+      render: json
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: OS, `python3 --version`, and your Claude Code version.
+      placeholder: macOS 15.2, Python 3.12.4, Claude Code 2.1.204
+    validations:
+      required: true

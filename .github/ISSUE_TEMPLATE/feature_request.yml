@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an improvement to routing, cost tracking, or the install experience
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that is awkward or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Rough shape is fine. If it needs configuration, sketch the config.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints this would need to respect
+      description: |
+        The hook and statusline run on every prompt in every session, so these are load-bearing.
+        Tick the ones you have already thought about — an unticked box is not a blocker.
+      options:
+        - label: Works with stdlib only (no new runtime dependencies)
+        - label: No network calls or clock reads in the prompt-scoring path
+        - label: Fails open — a failure must never block or delay a prompt
+        - label: Off by default, or backwards compatible with existing configs

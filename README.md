@@ -1,5 +1,6 @@
 # model-switcher
 
+[![CI](https://github.com/jig21nesh/model-switcher/actions/workflows/ci.yml/badge.svg)](https://github.com/jig21nesh/model-switcher/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Claude Code](https://img.shields.io/badge/Claude%20Code-hooks%20·%20subagents%20·%20statusline-purple)
@@ -472,10 +473,15 @@ A skill or subagent alone cannot do the whole job because they only run when inv
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install pytest pytest-cov
-.venv/bin/python -m pytest tests/ --cov=hooks --cov=statusline --cov=scripts --cov-branch
+.venv/bin/python -m pytest tests/ -q                 # full suite
+.venv/bin/python -m pytest tests/ -q -m lifecycle    # real install.sh against a temp CLAUDE_DIR
 ```
 
-Runtime code is stdlib-only; `pytest`/`pytest-cov` are development-only dependencies. The router fails open (a hook error never blocks your prompt), the statusline always prints a line, and prompt text is treated as untrusted input everywhere. See [CLAUDE.md](CLAUDE.md) for project conventions and `docs/adr/` for decision records.
+Runtime code is stdlib-only; `pytest`/`pytest-cov` are development-only dependencies. CI runs the
+suite on Python 3.10–3.14, lints with `ruff` and `shellcheck`, enforces an 80% line-and-branch
+coverage floor **per file**, and exercises a full install/uninstall cycle on Linux and macOS.
+
+The router fails open (a hook error never blocks your prompt), the statusline always prints a line, and prompt text is treated as untrusted input everywhere. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full check list, [CLAUDE.md](CLAUDE.md) for project conventions, and `docs/adr/` for decision records.
 
 ---
 
@@ -489,7 +495,7 @@ Contributions are welcome, especially around:
 - Documentation and demo examples
 - Safer install/uninstall behaviour
 
-`main` is protected: all changes arrive as pull requests and are reviewed and merged by the maintainer. Open an issue first if you want to discuss a larger change.
+`main` is protected: all changes arrive as pull requests and are reviewed and merged by the maintainer. Open an issue first if you want to discuss a larger change. Start with [CONTRIBUTING.md](CONTRIBUTING.md) — it lists the checks CI runs and the hard rules for code on the per-prompt path. Security issues go through [SECURITY.md](SECURITY.md), privately, rather than a public issue.
 
 ## Roadmap
 

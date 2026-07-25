@@ -45,7 +45,12 @@ def stdin_payload(transcript_path=None, model_name="Sonnet 5", builtin_cost=None
     return json.dumps(payload)
 
 
-USAGE = {"input_tokens": 1000, "cache_creation_input_tokens": 2000, "cache_read_input_tokens": 10000, "output_tokens": 500}
+USAGE = {
+    "input_tokens": 1000,
+    "cache_creation_input_tokens": 2000,
+    "cache_read_input_tokens": 10000,
+    "output_tokens": 500,
+}
 # 1000*3 + 2000*3.75 + 10000*0.3 + 500*15 = 3000+7500+3000+7500 = 21000 / 1e6 = $0.021
 USAGE_COST = 0.021
 
@@ -69,7 +74,8 @@ class TestCostMath:
         assert statusline.match_pricing("gpt-4o", PRICING) is None
 
     def test_entry_with_null_rate_is_unusable(self):
-        config = {"pricing_usd_per_mtok": {"claude-sonnet-5": {"input": 3.0, "output": None, "cache_write": 1, "cache_read": 1}}}
+        rates = {"input": 3.0, "output": None, "cache_write": 1, "cache_read": 1}
+        config = {"pricing_usd_per_mtok": {"claude-sonnet-5": rates}}
         assert statusline.usable_pricing(config) == {}
 
 

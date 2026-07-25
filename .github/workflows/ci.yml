@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff + shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff==0.14.2
+      - name: Lint Python
+        run: ruff check .
+      - name: Lint shell
+        run: shellcheck install.sh
+
+  test:
+    name: pytest (py${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          # The tool installs into a developer's local ~/.claude; macOS is a first-class target.
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dev dependencies
+        run: pip install pytest==9.1.1 pytest-cov==7.0.0
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  coverage:
+    name: coverage floor (80% line + branch, per file)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: pip install pytest==9.1.1 pytest-cov==7.0.0
+      - name: Run tests with coverage
+        run: python -m pytest tests/ -q --cov --cov-branch --cov-report=json:coverage.json --cov-report=term
+      - name: Enforce per-file floor
+        run: python tools/check_coverage.py coverage.json --floor 80
+
+  lifecycle:
+    name: install/uninstall lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: pip install pytest==9.1.1
+      - name: Run the real installer against a throwaway CLAUDE_DIR
+        run: python -m pytest tests/ -q -m lifecycle
