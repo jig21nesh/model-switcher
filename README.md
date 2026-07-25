@@ -312,22 +312,42 @@ All configuration lives in `~/.claude/model-switcher/config.json`.
 
 ### 2. Configure pricing
 
-`pricing_usd_per_mtok` ships pre-filled for the default models — **$ per million tokens**, four rates per model. Verify them against the current values at <https://claude.com/pricing> (model IDs and rates: <https://platform.claude.com/docs/en/about-claude/pricing>):
+`pricing_usd_per_mtok` ships pre-filled for every current model — **$ per million tokens**:
 
 ```json
 {
   "pricing_usd_per_mtok": {
-    "claude-fable-5":   { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_read": 1.00 },
-    "claude-opus-4-8":  { "input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_read": 0.50 },
-    "claude-sonnet-5":  { "input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30 }
+    "claude-fable-5":  { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00 },
+    "claude-opus-5":   { "input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_write_1h": 10.00, "cache_read": 0.50 },
+    "claude-sonnet-5": { "input": 2.00, "output": 10.00, "cache_write": 2.50, "cache_write_1h": 4.00, "cache_read": 0.20 }
   }
 }
 ```
 
-> [!WARNING]
-> Model prices change — check the shipped rates against the official pricing pages before trusting the cost output.
+Four rates are required (`input`, `output`, `cache_write`, `cache_read`). Two are optional:
 
-A model entry is used only when all four rates are numbers. Dated IDs like `claude-sonnet-5-20250929` match their base entry by prefix. Until at least one entry is complete, the statusline shows a pricing warning and Claude reminds you once per session.
+- **`cache_write_1h`** — cache writes are billed by time-to-live: 1.25× input at a 5-minute TTL, **2× input at a 1-hour TTL**. `cache_write` is the 5-minute rate. Claude Code uses 1-hour caching heavily, so leaving this out under-reports cost substantially — on a real 3,200-transcript corpus, by about 60% of cache-write spend.
+- **`fast`** — a nested rate block used when a turn reports `usage.speed == "fast"`. Fast mode runs the same model at premium rates.
+
+Both are optional and their absence reproduces the previous behaviour exactly, so an older config keeps working.
+
+### Keeping rates current
+
+```sh
+./bin/model-switcher pricing              # compare your config against the maintained table
+./bin/model-switcher pricing --yes        # apply the differences (backs up your config first)
+./bin/model-switcher pricing --offline    # use the table bundled in this repo, no network
+```
+
+The check exits non-zero when your rates have drifted, so it works in a scheduled job. It fetches
+`config/pricing.json` from this repo over HTTPS, validates every rate before writing anything, and
+leaves models it does not recognise — including any you added yourself — untouched. The hook and
+the statusline never make network calls; this is the only command that does.
+
+> [!WARNING]
+> Model prices change. `claude-sonnet-5` currently shows introductory pricing that reverts to $3.00/$15.00 after 2026-08-31. Re-run the pricing check rather than trusting a table you installed months ago.
+
+A model entry is used only when all four required rates are usable numbers — a `true`, a negative, or a non-numeric rate disqualifies the entry rather than being coerced. Dated IDs like `claude-sonnet-5-20250929` match their base entry by prefix. Until at least one entry is complete, the statusline shows a pricing warning and Claude reminds you once per session.
 
 ### 3. Tune the threshold
 
@@ -452,6 +472,8 @@ Full scenario tables and findings: [docs/lifecycle-test-report.md](docs/lifecycl
 ## How cost is calculated
 
 `statusline/cost_statusline.py` stream-parses the session transcript (`.jsonl`), dedupes streamed assistant messages by message ID, and sums input, output, cache-creation, and cache-read tokens per model — including subagent (sidechain) usage. Cost = tokens × your configured $/MTok rates, computed entirely offline. It is an estimate derived from transcript usage, not your official Anthropic bill.
+
+Cache writes are split by TTL: the transcript reports `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens` separately, and each bucket is priced at its own rate. Where that per-TTL breakdown is present it is treated as authoritative — a few entries carry a flat `cache_creation_input_tokens` total that disagrees with the breakdown beside it, and mixing the two would double-count. Entries reporting `usage.speed == "fast"` are priced from the model's `fast` rate block when one is configured.
 
 ---
 
