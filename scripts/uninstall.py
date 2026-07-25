@@ -25,6 +25,7 @@ INSTALLED_FILES = (
     "uninstall.py",
     "status_report.py",
     "agent_router.py",
+    "tune_threshold.py",
     "cli.py",
     "analyze_history.py",
     "update_pricing.py",

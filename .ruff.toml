@@ -20,5 +20,5 @@ known-first-party = [
     "manage_claude_md",
     "merge_settings",
     "uninstall",
-    "status_report", "update_pricing",
+    "status_report", "tune_threshold", "update_pricing",
 ]

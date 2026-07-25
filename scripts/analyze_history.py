@@ -101,7 +101,11 @@ def prompt_text(message: object) -> str:
 
 
 def iter_turns(transcript: Path):
-    """Yield {text, session, tools, mutations, delegations, output} per real user prompt."""
+    """Yield {text, session, tools, mutations, delegations, output, usage} per real user prompt.
+
+    `usage` keeps the raw usage blocks the turn produced, keyed by message id so a streamed
+    message counted once. Nothing here reads them; `tune` re-prices them at a different tier.
+    """
     current = None
     try:
         handle = transcript.open(encoding="utf-8", errors="replace")
@@ -125,15 +129,20 @@ def iter_turns(transcript: Path):
                 current = {
                     "text": text,
                     "session": str(record.get("sessionId") or transcript.stem),
-                    "tools": 0, "mutations": 0, "delegations": 0, "output": 0,
+                    "tools": 0, "mutations": 0, "delegations": 0, "output": 0, "usage": {},
                 }
             elif kind == "assistant" and current is not None:
                 message = record.get("message")
                 if not isinstance(message, dict):
                     continue
                 usage = message.get("usage")
-                if isinstance(usage, dict) and isinstance(usage.get("output_tokens"), int):
-                    current["output"] += usage["output_tokens"]
+                if isinstance(usage, dict):
+                    if isinstance(usage.get("output_tokens"), int):
+                        current["output"] += usage["output_tokens"]
+                    # Streaming rewrites the same message id and only the last entry carries final
+                    # usage, so key on it exactly as cost_statusline.parse_transcript does.
+                    key = message.get("id") or record.get("uuid") or f"entry-{len(current['usage'])}"
+                    current["usage"][str(key)] = usage
                 for block in message.get("content") or []:
                     if not isinstance(block, dict) or block.get("type") != "tool_use":
                         continue

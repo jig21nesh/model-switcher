@@ -90,8 +90,9 @@ model; harder ones are delegated to `mid-task-*` or `heavy-task-*`.
 
 None of these are needed for routing to work — they are for inspecting and tuning it. `explain`
 shows where a prompt routes and why, before you spend a token. `tiers` prints your routing ladder.
-`learn` tunes the router on your own history and reports the accuracy change. `pricing` refreshes
-your rate table.
+`learn` tunes the router on your own history and reports the accuracy change. `tune` shows what
+that history says about your `complexity.threshold`. `status` reports what the install is
+configured to do and what is wrong with it. `pricing` refreshes your rate table.
 
 *All three recordings replay genuine captured output — `tools/capture_demo.sh` runs the real
 installer, the real hook and the real CLI in a sandbox, and `tools/make_demo_gif.py` types the
@@ -248,6 +249,84 @@ to consume it: [`docs/classifier-schema.md`](docs/classifier-schema.md).
 > the weights optimise for *became work*, which correlates with *needed the better model* without
 > being identical to it. Review the candidate before applying it.
 
+### Pick a threshold from evidence
+
+`complexity.threshold` ships as `5` because a number was needed, not because 5 was measured. `tune`
+answers the question the default was standing in for: on **your** history, what did prompts at each
+score actually turn into, and what would a different threshold have delegated, caught and cost?
+
+```sh
+model-switcher tune                          # your whole corpus
+model-switcher tune --max-sessions 50        # cap how much history is read
+model-switcher tune --transcripts ~/elsewhere/projects   # repeatable
+```
+
+It changes nothing. It prints two tables and you edit `config.json` yourself if you want to.
+
+```text
+corpus: 1,152 usable prompts from 24 sessions (551 became real work, 601 did not)
+scored: built-in signals only
+
+what prompts at each score actually did:
+
+  score   prompts   became real work
+      0       249   #                      6%
+      1       166   ######                31%
+      2       101   ##########            48%
+      3       122   #########             44%
+      4         0                           -
+      5         0                           -   <- current threshold (5)
+      6       109   ############          61%
+      7       108   ################      79%
+      8       180   ###############       73%
+      9        53   ################      81%
+     10        64   ##################    91%
+
+what each candidate threshold would do:
+
+  threshold  delegated  precision   recall     F1   $/1k prompts
+          3      55.2%      68.7%    79.3%   73.6        $268.41
+          4      44.6%      74.5%    69.5%   71.9        $240.69
+          5      44.6%      74.5%    69.5%   71.9        $240.69   <- current
+          6      44.6%      74.5%    69.5%   71.9        $240.69
+          7      35.2%      78.3%    57.5%   66.3        $208.67
+          8      25.8%      78.1%    42.1%   54.7        $172.92
+
+no recommendation: nothing beats your current 5 by enough to matter (best is 3 at F1 73.6 vs 71.9). Leave it alone.
+```
+
+The **calibration table** is the raw evidence: how many prompts landed at each score, and what
+share of them went on to spawn a subagent, make three or more edits, or run twelve or more tool
+calls. That is the same "became real work" label [`learn`](#teaching-it-from-your-own-history)
+uses — imported, not reimplemented, so the two commands cannot disagree. Scoring runs through the
+router with your learned classifier applied, so the table describes the routing you actually have.
+
+Empty score bands are normal and worth reading: the built-in scorer awards 5+ points for a task
+verb and up to 3 for domain terms, so some totals are simply hard to reach. A threshold sitting in
+a gap (5, above) behaves identically to the nearest score that prompts actually land on — which is
+why three rows of the sweep are the same, and why moving it by one may do nothing at all.
+
+The **threshold sweep** shows the trade. `delegated` is the share of prompts that would go to
+`models.complex`; `precision` is how many of those were real work; `recall` is how much of the real
+work got there. A recommendation is printed only when the corpus supports one: below 150 usable
+prompts, or when no candidate beats your current threshold by a clear margin, it says so rather
+than naming a number.
+
+> [!IMPORTANT]
+> **`$/1k prompts` is an estimate, not a quote.** It re-prices each historical prompt's *own
+> recorded tokens* at the tier it would route to under that threshold — `models.simple` rates when
+> it stays in-session, `models.complex` when it delegates. That assumes the same prompt burns the
+> same tokens on either model, which is not true: a stronger model may finish in fewer turns, or
+> think for longer. Unlike the [`saved`](#what-each-segment-means) statusline segment, which
+> deliberately under-reports, this one has no known direction of error. Compare rows against each
+> other; do not read any of them as a bill. The column is dropped entirely — with the reason
+> printed — when pricing is not configured, a tier has no rates, or the transcripts recorded no
+> token usage, rather than being guessed. See
+> [ADR-0012](docs/adr/0012-threshold-calibration-from-observed-outcomes.md).
+
+Nothing leaves your machine, and no prompt text is printed or written — only counts, rates and
+scores. A three-tier install is swept as in-session versus `models.complex` only, and says so.
+
 ### Ask why a prompt routes the way it does
 
 `explain` scores a prompt and shows its working, without spending a token:
@@ -378,7 +457,7 @@ sequenceDiagram
 | `~/.claude/model-switcher/cost_statusline.py` | Statusline command |
 | `~/.claude/model-switcher/config.json` | Your configuration — created from `config/config.example.json` if absent, never overwritten |
 | `~/.claude/model-switcher/installed.json` | Manifest of your pre-install `model`/`statusLine`/agent, used by uninstall |
-| `~/.claude/model-switcher/model-switcher` | The `pricing` / `learn` / `explain` CLI, plus the modules and rate table it needs — so it keeps working if you delete the clone |
+| `~/.claude/model-switcher/model-switcher` | The `pricing` / `learn` / `tune` / `explain` / `status` CLI, plus the modules and rate table it needs — so it keeps working if you delete the clone |
 | `~/.claude/model-switcher/classifier.json` | Learned routing weights, once you run `learn --apply`. Kept on uninstall, like your config |
 | `~/.claude/agents/heavy-task-<model>.md` | The subagent, named for and stamped with your configured complex model, e.g. `heavy-task-fable` |
 | `~/.claude/agents/mid-task-<model>.md` | The middle-tier subagent — only when `models.standard` is set, e.g. `mid-task-sonnet` |
@@ -564,6 +643,9 @@ A model entry is used only when all four required rates are usable numbers — a
 ```
 
 Prompts scoring at or above the threshold (0–10, integer or float, clamped to 1–10) are delegated. Raise it if too much gets delegated, lower it for more heavy-model routing. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
+
+The default of `5` is a starting guess, not a measurement. `tune` replaces the guess with your own
+history — see [Pick a threshold from evidence](#pick-a-threshold-from-evidence) below.
 
 ### 4. Switch routing on and off
 
@@ -775,6 +857,7 @@ Contributions are welcome, especially around:
 - [x] Add per-project config override — shipped in [v0.2.0](https://github.com/jig21nesh/model-switcher/releases/tag/v0.2.0)
 - [x] Add a dry-run mode that only shows routing decisions — `model-switcher explain`
 - [x] Learn routing weights from your own history — `model-switcher learn`
+- [x] Calibrate the threshold against your own history — `model-switcher tune`
 - [x] Publish first tagged release — [v0.1.0](https://github.com/jig21nesh/model-switcher/releases/tag/v0.1.0)
 
 ## Ideas to fork or extend

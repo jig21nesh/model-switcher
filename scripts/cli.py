@@ -15,6 +15,7 @@ from pathlib import Path
 import analyze_history
 import complexity_router
 import status_report
+import tune_threshold
 import uninstall as uninstall_module
 import update_pricing
 
@@ -170,6 +171,25 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 1 if status_report.render_checks(config, home, session_model, scan) else 0
 
 
+def cmd_tune(args: argparse.Namespace) -> int:
+    config = _read_config(args.config or config_path())
+    if config is None:
+        return 2
+    directories = args.transcripts or [analyze_history.DEFAULT_TRANSCRIPTS]
+    print("Reading local Claude Code transcripts to see what your own prompts became.")
+    for directory in directories:
+        print(f"  scanning: {directory}")
+    print("  nothing leaves this machine; no prompt text is printed or written.")
+
+    turns = tune_threshold.collect(directories, args.max_sessions)
+    if not turns:
+        print("\nno usable prompts found in those transcripts — nothing to calibrate against.",
+              file=sys.stderr)
+        return 1
+    tune_threshold.report(config, turns)
+    return 0
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     install_dir = home_dir()
     claude_dir = args.claude_dir or install_dir.parent
@@ -232,6 +252,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"directory of transcripts to check (default: {analyze_history.DEFAULT_TRANSCRIPTS})",
     )
     status.set_defaults(handler=cmd_status)
+
+    tune = subcommands.add_parser(
+        "tune",
+        help="show what your own history says about complexity.threshold, before you change it",
+    )
+    tune.add_argument("--config", type=Path, default=None, help="config.json to read (default: your install)")
+    tune.add_argument(
+        "--transcripts", type=Path, action="append", default=None,
+        help=f"directory of transcripts, repeatable (default: {analyze_history.DEFAULT_TRANSCRIPTS})",
+    )
+    tune.add_argument("--max-sessions", type=int, default=None, help="cap how many sessions are read")
+    tune.set_defaults(handler=cmd_tune)
 
     tiers = subcommands.add_parser(
         "tiers",

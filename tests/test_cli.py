@@ -330,6 +330,96 @@ class TestTiersCommand:
         assert len(marked) == 1 and "answered in-session" in marked[0]
 
 
+TUNE_CONFIG = {
+    "models": {"complex": "fable", "simple": "sonnet"},
+    "complexity": {"threshold": 5},
+    "pricing_usd_per_mtok": {
+        "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_write": 12.5, "cache_read": 1.0},
+        "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_write": 2.5, "cache_read": 0.2},
+    },
+}
+
+
+class TestTuneCommand:
+    def _transcripts(self, tmp_path, sessions=3, name="projects"):
+        directory = tmp_path / name / "proj"
+        directory.mkdir(parents=True, exist_ok=True)
+        for s in range(sessions):
+            records = []
+            for i in range(4):
+                heavy = i % 2 == 0
+                text = "refactor the auth module and migrate the schema" if heavy else "rename it"
+                records.append({"type": "user", "sessionId": f"{name}-s{s}", "message": {"content": text}})
+                records.append({"type": "assistant", "message": {
+                    "id": f"m{s}-{i}", "model": "claude-sonnet-5",
+                    "content": [{"type": "tool_use", "name": "Edit"}] * (14 if heavy else 1),
+                    "usage": {"input_tokens": 100, "output_tokens": 900},
+                }})
+            (directory / f"t{s}.jsonl").write_text(
+                "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+            )
+        return directory
+
+    def test_reports_the_calibration_and_the_sweep(self, home, tmp_path, capsys):
+        (home / "config.json").write_text(json.dumps(TUNE_CONFIG))
+        assert cli.main(["tune", "--transcripts", str(self._transcripts(tmp_path))]) == 0
+        out = capsys.readouterr().out
+        assert "became real work" in out and "<- current threshold (5)" in out
+        assert "$/1k prompts" in out and "ESTIMATE, not a quote" in out
+
+    def test_announces_what_it_reads_before_reading_it(self, home, tmp_path, capsys):
+        (home / "config.json").write_text(json.dumps(TUNE_CONFIG))
+        directory = self._transcripts(tmp_path)
+        cli.main(["tune", "--transcripts", str(directory)])
+        out = capsys.readouterr().out
+        assert str(directory) in out and "nothing leaves this machine" in out
+
+    def test_reads_every_transcript_directory_it_is_given(self, home, tmp_path, capsys):
+        (home / "config.json").write_text(json.dumps(TUNE_CONFIG))
+        first = self._transcripts(tmp_path, sessions=2, name="a")
+        second = self._transcripts(tmp_path, sessions=3, name="b")
+        cli.main(["tune", "--transcripts", str(first), "--transcripts", str(second)])
+        assert "20 usable prompts from 5 sessions" in capsys.readouterr().out
+
+    def test_honours_the_session_cap(self, home, tmp_path, capsys):
+        (home / "config.json").write_text(json.dumps(TUNE_CONFIG))
+        cli.main(["tune", "--transcripts", str(self._transcripts(tmp_path, sessions=4)), "--max-sessions", "1"])
+        assert "4 usable prompts from 1 sessions" in capsys.readouterr().out
+
+    def test_reads_an_explicit_config_path(self, home, tmp_path, capsys):
+        elsewhere = tmp_path / "other.json"
+        elsewhere.write_text(json.dumps(dict(TUNE_CONFIG, complexity={"threshold": 7})))
+        code = cli.main([
+            "tune", "--config", str(elsewhere), "--transcripts", str(self._transcripts(tmp_path)),
+        ])
+        assert code == 0 and "<- current threshold (7)" in capsys.readouterr().out
+
+    def test_reports_an_empty_corpus_rather_than_inventing_a_table(self, home, tmp_path, capsys):
+        (home / "config.json").write_text(json.dumps(TUNE_CONFIG))
+        assert cli.main(["tune", "--transcripts", str(tmp_path / "absent")]) == 1
+        captured = capsys.readouterr()
+        assert "no usable prompts" in captured.err
+        assert "became real work" not in captured.out
+
+    def test_survives_a_corpus_of_nothing_but_malformed_lines(self, home, tmp_path, capsys):
+        (home / "config.json").write_text(json.dumps(TUNE_CONFIG))
+        directory = tmp_path / "junk" / "proj"
+        directory.mkdir(parents=True)
+        (directory / "t.jsonl").write_text("{ not json\n[1,2]\nnull\n\x00\n", encoding="utf-8")
+        assert cli.main(["tune", "--transcripts", str(directory)]) == 1
+        assert "no usable prompts" in capsys.readouterr().err
+
+    def test_reports_a_missing_config_rather_than_crashing(self, home, capsys):
+        assert cli.main(["tune"]) == 2
+        assert "run ./install.sh first" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("body", ["{not json", '"a string"', "[1, 2]", ""])
+    def test_survives_an_unusable_config(self, home, capsys, body):
+        (home / "config.json").write_text(body)
+        assert cli.main(["tune"]) == 2
+        assert capsys.readouterr().err.strip()
+
+
 class TestStatusCommand:
     def _install(self, home, config, agent=None, settings=None):
         (home / "config.json").write_text(json.dumps(config))
