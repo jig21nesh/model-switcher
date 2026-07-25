@@ -233,10 +233,14 @@ class TestSweep:
 
 
 class TestRecommend:
-    def _rows(self, best_threshold, best_f1, current_f1=0.40):
+    def _rows(self, best_threshold, best_f1, current_f1=0.40, best_precision=0.62):
+        # Precision varies with the candidate: a threshold that is genuinely better is more
+        # accurate, not merely more generous. A flat-precision fixture would describe a
+        # recall-for-cost trade, which recommend() deliberately declines to advise.
         return [
             {"threshold": t, "f1": best_f1 if t == best_threshold else current_f1,
-             "delegated": 0.2, "precision": 0.5, "recall": 0.5, "cost": None}
+             "delegated": 0.2, "precision": best_precision if t == best_threshold else 0.5,
+             "recall": 0.5, "cost": None}
             for t in (3, 4, 5, 6, 7, 8)
         ]
 
@@ -356,3 +360,63 @@ class TestReport:
     def test_survives_a_corpus_where_every_prompt_scores_the_same(self):
         out = render(CONFIG, [turn(LIGHT_TEXT, heavy=False) for _ in range(5)])
         assert "no recommendation" in out
+
+
+def bucket(score, prompts, rate):
+    return {"score": score, "prompts": prompts, "heavy": round(prompts * rate), "rate": rate}
+
+
+class TestOrderingNote:
+    def test_says_nothing_when_higher_scores_do_mean_harder_work(self):
+        rows = [bucket(0, 100, 0.1), bucket(5, 100, 0.4), bucket(10, 100, 0.8)]
+        assert tune.ordering_note(rows) == ""
+
+    def test_flags_a_top_bucket_that_is_less_predictive_than_the_middle(self):
+        rows = [bucket(0, 990, 0.13), bucket(4, 86, 0.49), bucket(10, 333, 0.39)]
+        note = tune.ordering_note(rows)
+        assert "score 10" in note and "score 4" in note and "scoring problem" in note
+
+    def test_a_small_dip_is_not_worth_reporting(self):
+        rows = [bucket(0, 100, 0.10), bucket(5, 100, 0.42), bucket(10, 100, 0.40)]
+        assert tune.ordering_note(rows) == ""
+
+    def test_thin_buckets_are_ignored_as_noise(self):
+        # The 90% bucket has 3 prompts; it must not become the yardstick.
+        rows = [bucket(0, 100, 0.1), bucket(5, 3, 0.9), bucket(10, 100, 0.5)]
+        assert tune.ordering_note(rows) == ""
+
+    def test_says_nothing_without_enough_populated_buckets(self):
+        assert tune.ordering_note([bucket(0, 100, 0.1), bucket(10, 100, 0.05)]) == ""
+
+    def test_says_nothing_for_an_empty_calibration(self):
+        assert tune.ordering_note([]) == ""
+
+
+class TestRecommendationGuardsPrecision:
+    def _turns(self, n=400, heavy=120):
+        return [{"heavy": i < heavy} for i in range(n)]
+
+    def _rows(self, current_precision, best_precision):
+        return [
+            {"threshold": 3, "delegated": 0.35, "precision": best_precision, "recall": 0.56,
+             "f1": 0.476, "cost": 1615.93},
+            {"threshold": 5, "delegated": 0.25, "precision": current_precision, "recall": 0.42,
+             "f1": 0.422, "cost": 1362.72},
+        ]
+
+    def test_more_recall_at_the_same_precision_is_a_trade_not_advice(self):
+        # The real shape of this user's corpus: F1 rises only because more is delegated.
+        text = tune.recommend(self._rows(0.423, 0.414), 5, self._turns())
+        assert text.startswith("no recommendation")
+        assert "buys recall, not accuracy" in text and "$1,615.93" in text
+
+    def test_a_genuine_precision_gain_is_still_recommended(self):
+        text = tune.recommend(self._rows(0.423, 0.510), 5, self._turns())
+        assert text.startswith("recommendation: try threshold 3")
+
+    def test_the_trade_reads_without_pricing(self):
+        rows = self._rows(0.423, 0.414)
+        for row in rows:
+            row["cost"] = None
+        text = tune.recommend(rows, 5, self._turns())
+        assert text.startswith("no recommendation") and "$" not in text

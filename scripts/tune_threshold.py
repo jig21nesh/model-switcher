@@ -33,6 +33,14 @@ BAR_WIDTH = 20
 # An F1 difference smaller than this is not worth telling someone to edit their config over: on a
 # few hundred prompts it is comfortably inside the noise of which sessions happened to be scanned.
 MIN_F1_GAIN = 0.02
+# A candidate that raises F1 purely by delegating more of the same mix has bought recall, not
+# accuracy. Below this much precision gain, the change is presented as a trade, not advice.
+MIN_PRECISION_GAIN = 0.03
+# How far the top score bucket may sit below the best mid bucket before the scale is described
+# as not ordering prompts. Well above sampling noise on a few dozen prompts.
+MONOTONIC_SLACK = 0.05
+# Buckets thinner than this are noise, not evidence of anything.
+MIN_BUCKET_PROMPTS = 25
 COST_BASIS_PROMPTS = 1000
 
 
@@ -169,6 +177,18 @@ def recommend(rows: list[dict], threshold: float, turns: list[dict]) -> str:
             f"(best is {best['threshold']:g} at F1 {best['f1'] * 100:.1f} vs {current['f1'] * 100:.1f}). "
             "Leave it alone."
         )
+    if best["precision"] - current["precision"] < MIN_PRECISION_GAIN and best["f1"] > current["f1"]:
+        price = ""
+        if current["cost"] is not None and best["cost"] is not None:
+            price = (f" at est. {statusline.format_cost(best['cost'])} vs "
+                     f"{statusline.format_cost(current['cost'])} per {COST_BASIS_PROMPTS:,} prompts")
+        return (
+            f"no recommendation: threshold {best['threshold']:g} scores higher on F1 "
+            f"({best['f1'] * 100:.1f} vs {current['f1'] * 100:.1f}) but only by delegating more of "
+            f"the same mix — precision {best['precision'] * 100:.1f}% against {current['precision'] * 100:.1f}% "
+            f"today. That buys recall, not accuracy{price}. Worth it if catching more real work "
+            "matters more than the spend; otherwise leave it."
+        )
     # F1 is blind to which error is dearer, so a recommendation that moves the delegated share
     # states its price. Recommending "delegate more" without it would hide the whole trade.
     price = ""
@@ -196,6 +216,32 @@ def render_calibration(rows: list[dict], threshold: float, echo=print) -> None:
     echo("")
     echo("  'real work' is the label 'learn' uses: the prompt spawned a subagent, made 3+ edits,")
     echo("  or ran 12+ tool calls. Prompts at or above the marked score are delegated today.")
+    note = ordering_note(rows)
+    if note:
+        echo("")
+        echo(note)
+
+
+def ordering_note(rows: list[dict]) -> str:
+    """Say so when a higher score does not mean harder work.
+
+    The table shows this but does not state it, and it is the single most important thing the
+    calibration can tell you: if the top of the scale is no more predictive than the middle,
+    no choice of threshold will fix it, because the threshold is not the problem.
+    """
+    populated = [row for row in rows if row["prompts"] >= MIN_BUCKET_PROMPTS]
+    if len(populated) < 3:
+        return ""
+    top = populated[-1]
+    best = max(populated, key=lambda row: row["rate"])
+    if best["score"] >= top["score"] or best["rate"] - top["rate"] < MONOTONIC_SLACK:
+        return ""
+    return (
+        f"  note: score {top['score']} ({top['prompts']:,} prompts, {top['rate'] * 100:.0f}% real work) is "
+        f"less predictive than score {best['score']} ({best['rate'] * 100:.0f}%), so the scale is not\n"
+        "  ordering prompts by difficulty at the top end. No threshold fixes that — it is a\n"
+        "  scoring problem. 'model-switcher classifier' shows what the learned terms are doing."
+    )
 
 
 def render_sweep(rows: list[dict], threshold: float, priced: bool, why_not: str, echo=print) -> None:
