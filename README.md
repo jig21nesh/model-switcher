@@ -489,8 +489,39 @@ Two things to watch:
 Statusline with pricing configured (appended to your existing statusline if you had one):
 
 ```text
-Sonnet 5 | Context: 45% used / 55% left | my-repo (main) | turn $0.0042 | session $0.19 (26.0k in / 1.0k out)
+Sonnet 5 | my-repo (main) | turn $0.0042 | session $4.23 | saved $8.13 (66%) | 3.3M in / 33.0k out | 3 tiers
 ```
+
+### What each segment means
+
+| Segment | Shows | Quiet when |
+|---|---|---|
+| `turn` | Cost of the current turn | never |
+| `session` | Cost of the whole session | never |
+| `saved` | What routing avoided versus running everything on your `complex` model | nothing was saved |
+| `tokens` | Total tokens in / out | never |
+| `routing` | `routing off`, or `3 tiers` when a middle tier is active | plain two-tier routing |
+| `models` | Your model ladder, e.g. `haiku > sonnet > fable` | not in the default set |
+
+`saved` is a **counterfactual, not a bill**: it re-prices every token in the transcript at your
+`complex` model's rates and subtracts what you actually spent. It stays silent when the answer is
+zero — including when routing is off — rather than displaying a reassuring `$0.00`.
+
+Choose your own line with `statusline.segments`, in the order you want them:
+
+```json
+{
+  "statusline": {
+    "segments": ["turn", "session", "saved", "tokens", "routing"],
+    "savings_baseline": null
+  }
+}
+```
+
+The baseline model is resolved from `models.complex` — an alias like `fable` matches
+`claude-fable-5` in your pricing table, preferring the base id over a dated variant. Set
+`savings_baseline` to a pricing key to override it. Unknown segment names are ignored with a
+warning rather than breaking the line.
 
 Statusline before pricing is configured:
 

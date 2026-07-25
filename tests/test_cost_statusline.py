@@ -304,3 +304,171 @@ class TestRateValidation:
     def test_a_zero_rate_is_allowed(self):
         config = {"pricing_usd_per_mtok": {"m": {**RATES_LEGACY, "cache_read": 0}}}
         assert statusline.usable_pricing(config)["m"]["cache_read"] == 0.0
+
+
+TIERED = {
+    "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_write": 12.5, "cache_read": 1.0},
+    "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_write": 2.5, "cache_read": 0.2},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3},
+}
+
+
+def totals(session=1.0, baseline=3.0, turn=0.5, tokens_in=100, tokens_out=10, unknown=None):
+    return {
+        "turn": turn, "session": session, "baseline": baseline, "tokens_in": tokens_in,
+        "tokens_out": tokens_out, "unknown": unknown or set(), "baseline_model": "claude-fable-5",
+    }
+
+
+class TestBaselineModel:
+    @pytest.mark.parametrize("alias,expected", [
+        ("fable", "claude-fable-5"),
+        ("sonnet", "claude-sonnet-5"),
+        ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+    ])
+    def test_resolves_an_alias_to_a_pricing_key(self, alias, expected):
+        config = {"models": {"complex": alias}, "pricing_usd_per_mtok": TIERED}
+        assert statusline.baseline_model(config, TIERED) == expected
+
+    def test_prefers_the_base_id_over_a_dated_variant(self):
+        # Landing on the dearer claude-sonnet-4-6 would overstate savings.
+        config = {"models": {"complex": "sonnet"}, "pricing_usd_per_mtok": TIERED}
+        assert statusline.baseline_model(config, TIERED) == "claude-sonnet-5"
+
+    def test_an_explicit_override_wins(self):
+        config = {
+            "models": {"complex": "fable"},
+            "statusline": {"savings_baseline": "claude-sonnet-5"},
+        }
+        assert statusline.baseline_model(config, TIERED) == "claude-sonnet-5"
+
+    def test_an_override_naming_an_unpriced_model_is_ignored(self):
+        config = {"models": {"complex": "fable"}, "statusline": {"savings_baseline": "nope"}}
+        assert statusline.baseline_model(config, TIERED) == "claude-fable-5"
+
+    @pytest.mark.parametrize("models", [
+        {}, {"complex": ""}, {"complex": "   "}, {"complex": None}, {"complex": 5},
+        {"complex": "gpt-4"}, "not-a-dict",
+    ])
+    def test_returns_nothing_when_it_cannot_resolve(self, models):
+        assert statusline.baseline_model({"models": models}, TIERED) is None
+
+    def test_is_stable_regardless_of_table_order(self):
+        reversed_table = dict(reversed(list(TIERED.items())))
+        config = {"models": {"complex": "sonnet"}}
+        assert statusline.baseline_model(config, TIERED) == statusline.baseline_model(config, reversed_table)
+
+
+class TestSavingsSegment:
+    def test_reports_what_routing_avoided(self):
+        rendered = statusline._segment_saved(totals(session=1.0, baseline=3.0), {})
+        assert "saved" in rendered and "67%" in rendered
+
+    def test_is_silent_when_nothing_was_saved(self):
+        assert statusline._segment_saved(totals(session=3.0, baseline=3.0), {}) is None
+
+    def test_is_silent_when_the_session_cost_more_than_the_baseline(self):
+        assert statusline._segment_saved(totals(session=5.0, baseline=3.0), {}) is None
+
+    def test_is_silent_without_a_baseline(self):
+        assert statusline._segment_saved(totals(baseline=0.0), {}) is None
+
+    def test_is_silent_below_half_a_cent(self):
+        assert statusline._segment_saved(totals(session=1.0, baseline=1.004), {}) is None
+
+
+class TestRoutingSegment:
+    def test_says_when_routing_is_off(self):
+        assert statusline._segment_routing({}, {"routing": {"enabled": False}}) == "routing off"
+
+    def test_says_when_a_third_tier_is_active(self):
+        config = {"models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"}}
+        assert statusline._segment_routing({}, config) == "3 tiers"
+
+    def test_stays_quiet_for_the_two_tier_default(self):
+        assert statusline._segment_routing({}, {"models": {"complex": "fable"}}) is None
+
+    def test_respects_a_two_tier_override(self):
+        config = {"models": {"complex": "f", "standard": "s"}, "routing": {"tiers": 2}}
+        assert statusline._segment_routing({}, config) is None
+
+    @pytest.mark.parametrize("routing", ["nope", {"enabled": "false"}, {"tiers": True}, {}])
+    def test_survives_a_malformed_routing_block(self, routing):
+        assert statusline._segment_routing({}, {"routing": routing}) is None
+
+    def test_renders_the_model_ladder(self):
+        config = {"models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"}}
+        assert statusline._segment_models({}, config) == "haiku > sonnet > fable"
+
+    def test_model_ladder_is_silent_without_models(self):
+        assert statusline._segment_models({}, {"models": "nope"}) is None
+
+
+class TestSegmentSelection:
+    def test_defaults_when_unconfigured(self):
+        assert statusline.configured_segments({}) == statusline.DEFAULT_SEGMENTS
+
+    def test_honours_an_explicit_order(self):
+        config = {"statusline": {"segments": ["session", "turn"]}}
+        assert statusline.configured_segments(config) == ("session", "turn")
+
+    def test_drops_unknown_names(self):
+        config = {"statusline": {"segments": ["turn", "teleport"]}}
+        assert statusline.configured_segments(config) == ("turn",)
+
+    @pytest.mark.parametrize("segments", [[], "turn", None, ["nonsense"], [5, {}]])
+    def test_falls_back_to_defaults_for_anything_unusable(self, segments):
+        assert statusline.configured_segments({"statusline": {"segments": segments}}) == (
+            statusline.DEFAULT_SEGMENTS
+        )
+
+
+class TestDashboardLine:
+    def _session(self, tmp_path, home, config_extra=None):
+        write_config(home, TIERED)
+        config = json.loads((home / "config.json").read_text())
+        config.update(config_extra or {})
+        (home / "config.json").write_text(json.dumps(config))
+        usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        lines = [
+            transcript_line("user"),
+            transcript_line("assistant", msg_id="a", model="claude-sonnet-5", usage=usage),
+        ]
+        return stdin_payload(write_transcript(tmp_path, lines))
+
+    def test_shows_savings_against_the_heavy_model(self, tmp_path, home):
+        payload = self._session(tmp_path, home, {"models": {"complex": "fable", "simple": "sonnet"}})
+        line = statusline.run(payload)
+        # 1M in + 1M out on sonnet-5 is $12; on fable-5 it would have been $60.
+        assert "saved $48.00 (80%)" in line
+
+    def test_omits_savings_when_the_session_ran_on_the_heavy_model(self, tmp_path, home):
+        payload = self._session(tmp_path, home, {"models": {"complex": "sonnet", "simple": "sonnet"}})
+        assert "saved" not in statusline.run(payload)
+
+    def test_keeps_reporting_turn_session_and_tokens(self, tmp_path, home):
+        payload = self._session(tmp_path, home, {"models": {"complex": "fable", "simple": "sonnet"}})
+        line = statusline.run(payload)
+        assert "turn " in line and "session " in line and "in / " in line and "out" in line
+
+    def test_surfaces_routing_being_off(self, tmp_path, home):
+        payload = self._session(tmp_path, home, {
+            "models": {"complex": "fable", "simple": "sonnet"}, "routing": {"enabled": False},
+        })
+        assert "routing off" in statusline.run(payload)
+
+    def test_respects_a_custom_segment_list(self, tmp_path, home):
+        payload = self._session(tmp_path, home, {
+            "models": {"complex": "fable", "simple": "sonnet"},
+            "statusline": {"segments": ["saved"], "wrap_command": None},
+        })
+        line = statusline.run(payload)
+        assert "saved" in line and "turn " not in line and "session " not in line
+
+    def test_still_flags_a_model_with_no_rate(self, tmp_path, home):
+        write_config(home, TIERED)
+        lines = [
+            transcript_line("user"),
+            transcript_line("assistant", msg_id="a", model="claude-unknown-9", usage={"output_tokens": 5}),
+        ]
+        assert "no rate: claude-unknown-9" in statusline.run(stdin_payload(write_transcript(tmp_path, lines)))
