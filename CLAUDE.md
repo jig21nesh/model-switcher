@@ -4,13 +4,15 @@ Per-prompt model routing + offline cost statusline for Claude Code. See README.m
 
 ## Stack and layout
 
-- Python 3.12+ stdlib only at runtime; `pytest`/`pytest-cov` are the only dev dependencies.
+- Python 3.10+ stdlib only at runtime (CI matrix covers 3.10–3.14); `pytest`/`pytest-cov` are the
+  only dev dependencies. `ruff` and `shellcheck` are CI-only and never installed by contributors.
 - `hooks/complexity_router.py` — UserPromptSubmit hook (scoring + delegation directive).
 - `statusline/cost_statusline.py` — statusline command (offline cost from transcript).
 - `scripts/merge_settings.py` — settings.json install/uninstall logic (all merge logic lives here, not in bash).
 - `scripts/manage_claude_md.py` — marker-managed routing-policy block in the user's global CLAUDE.md; block text ships in `config/claude-md-section.md`.
 - `install.sh` — thin copier/orchestrator; keep logic out of it.
 - `agents/heavy-task.md` — subagent template; `model:` line is stamped by the installer.
+- `tools/` — repo tooling that is not part of the shipped product and is not coverage-measured.
 
 ## Hard rules
 
@@ -22,8 +24,13 @@ Per-prompt model routing + offline cost statusline for Claude Code. See README.m
 
 ## Testing
 
-- `.venv/bin/python -m pytest tests/ --cov=hooks --cov=statusline --cov=scripts --cov-branch`
-- 80% line and branch coverage floor per file; include hostile-input cases (malformed stdin, path traversal in session_id, shell metacharacters in prompts) for any new input surface.
+- `.venv/bin/python -m pytest tests/ -q --cov --cov-branch --cov-report=json:coverage.json`
+  then `.venv/bin/python tools/check_coverage.py coverage.json --floor 80`.
+- 80% line and branch floor is enforced **per file** by `tools/check_coverage.py`; a global average
+  is not sufficient. Include hostile-input cases (malformed stdin, path traversal in session_id,
+  shell metacharacters in prompts) for any new input surface.
+- `-m lifecycle` runs the real `install.sh` against a throwaway `CLAUDE_DIR` and asserts uninstall
+  restores `settings.json` and `CLAUDE.md` byte-for-byte. Never point it at a real `~/.claude`.
 
 ## Docs
 

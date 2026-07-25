@@ -241,7 +241,10 @@ class TestRunGuards:
 
     def test_agent_message_relays_skipped(self, home):
         write_config(home, CONFIGURED)
-        relay = '<agent-message from="general-purpose">refactor migrate deploy audit the entire codebase</agent-message>'
+        relay = (
+            '<agent-message from="general-purpose">'
+            "refactor migrate deploy audit the entire codebase</agent-message>"
+        )
         assert router.run(hook_input(relay)) == ""
 
     def test_agent_context_skipped(self, home):

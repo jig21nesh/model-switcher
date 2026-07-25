@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Runtime is stdlib-only, so GitHub Actions are the project's only supply chain.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
