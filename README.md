@@ -68,6 +68,26 @@ Claude: Delegating this to the heavy-task-fable agent...
 
 When delegation happens, the statusline model name does not change — Claude Code has no hard per-prompt model switch. Instead, Claude spawns the configured `heavy-task-*` subagent (its name shows the model, e.g. `heavy-task-fable`) and relays its answer.
 
+### Installing
+
+![Installing model-switcher — clone, run install.sh, and everything lands in ~/.claude including the CLI](docs/install-demo.gif)
+
+One command. The hook, statusline, both tier agents, the policy block and the `model-switcher`
+command all land in `~/.claude` — **after which the repo is no longer needed**.
+
+### Using it
+
+![Using model-switcher — explain shows how a prompt routes, learn tunes the router, and the statusline prices each turn](docs/usage-demo.gif)
+
+`explain` shows where a prompt routes and why, before you spend a token. `learn` tunes the router
+on your own history and reports the accuracy change. The statusline prices every turn offline and
+shows what routing saved.
+
+*Both recordings above replay genuine captured output — `tools/capture_demo.sh` runs the real
+installer and CLI in a sandbox, and `tools/make_demo_gif.py` types the result back. The `learn`
+term lists are withheld from the recording because they are derived from whatever the operator
+happened to be working on.*
+
 ---
 
 ## What it does
@@ -75,12 +95,17 @@ When delegation happens, the statusline model name does not change — Claude Co
 - Scores each prompt locally before Claude sees it
 - Keeps simple prompts on your configured session model
 - Delegates complex prompts to a `heavy-task-*` subagent
-- Names the subagent for the configured heavy model, for example `heavy-task-fable`, so the model is visible in the task line
-- Tracks turn and session cost from the local transcript, including subagent sidechain usage
-- Uses your own pricing table — no network calls
+- Optionally adds a **third tier** — a `mid-task-*` agent for work that is more than the cheap model but less than the dearest one
+- Names each subagent for its configured model, e.g. `heavy-task-fable`, so the model is visible in the task line
+- **Learns from your own history** which prompts actually become work, and reports the accuracy change before you apply it
+- **Explains any routing decision** without spending a token
+- Tracks turn and session cost from the local transcript, including subagent sidechain usage — priced by cache TTL, so 1-hour cache writes are not billed at the 5-minute rate
+- **Shows what routing saved** against running everything on your heaviest model
+- Uses your own pricing table, refreshable with one command — no network calls from the hook or statusline
 - Can be switched off globally or overridden per project, without uninstalling
 - Preserves an existing custom statusline if you already have one
 - Adds a marker-delimited routing policy block to `~/.claude/CLAUDE.md`
+- **Needs the repo only to install or upgrade** — the CLI installs alongside everything else, and can even uninstall itself
 
 ## What it does not do
 

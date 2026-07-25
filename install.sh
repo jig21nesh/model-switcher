@@ -146,7 +146,7 @@ if [ -f "$CLAUDE_DIR/CLAUDE.md.model-switcher.bak" ]; then
 fi
 if [ "$SKIP_MODEL" -eq 0 ]; then echo "  session model set to: $SIMPLE_MODEL (previous value saved in $MANIFEST)"; fi
 echo "  config:     $CONFIG"
-echo "              (pricing ships pre-filled; refresh it with ./bin/model-switcher pricing)"
+echo "              (pricing ships pre-filled; refresh it with 'model-switcher pricing')"
 echo "  cli:        $INSTALL_DIR/model-switcher (works without this repo)"
 echo "Next:"
 echo "  $INSTALL_DIR/model-switcher explain \"<a prompt>\"   how a prompt scores and where it routes"

@@ -62,3 +62,20 @@ No padding tests — each one should exercise real behaviour or a real error pat
 `main` is protected. Branch (`feat/…`, `fix/…`, `chore/…`, `refactor/…`), push, open a PR, and let
 CI go green. Keep commit subjects imperative and under 72 characters (`add X`, not `Added X`).
 Open an issue first if you want to discuss a larger change.
+
+## Regenerating the README demos
+
+The GIFs in `docs/` are replays of genuine output, not mock-ups:
+
+```sh
+tools/capture_demo.sh                                   # real install + CLI run in a sandbox
+python tools/make_demo_gif.py install --capture .demo-capture --out docs/install-demo.gif
+python tools/make_demo_gif.py usage   --capture .demo-capture --out docs/usage-demo.gif
+```
+
+`capture_demo.sh` strips the learned-term lists from the `learn` output before they can reach a
+committed asset — they are derived from whatever transcripts happen to be on the machine. It fails
+loudly rather than silently if that filter stops matching.
+
+Rendering needs Pillow, and optionally ImageMagick to shrink the result. Neither is a project
+dependency; the GIFs are committed so nobody needs either to build or test model-switcher.
