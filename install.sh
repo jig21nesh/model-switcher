@@ -87,14 +87,14 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 mkdir -p "$INSTALL_DIR/state" "$AGENTS_DIR"
-cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/statusline/cost_statusline.py" \
+cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/hooks/agent_router.py" "$REPO_DIR/statusline/cost_statusline.py" \
   "$REPO_DIR/scripts/merge_settings.py" "$REPO_DIR/scripts/manage_claude_md.py" \
   "$REPO_DIR/config/claude-md-section.md" "$INSTALL_DIR/"
 # The maintenance CLI and everything it needs, so pricing/learn/explain keep working after the
 # clone is deleted. Copied flat; bin/model-switcher handles both layouts.
 cp "$REPO_DIR/scripts/cli.py" "$REPO_DIR/scripts/analyze_history.py" \
   "$REPO_DIR/scripts/update_pricing.py" "$REPO_DIR/scripts/generate_agent.py" \
-  "$REPO_DIR/scripts/uninstall.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
+  "$REPO_DIR/scripts/uninstall.py" "$REPO_DIR/scripts/status_report.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
 cp "$REPO_DIR/bin/model-switcher" "$INSTALL_DIR/model-switcher"
 chmod +x "$INSTALL_DIR/model-switcher"
 [ -f "$CONFIG" ] || cp "$REPO_DIR/config/config.example.json" "$CONFIG"
@@ -131,6 +131,7 @@ python3 "$INSTALL_DIR/manage_claude_md.py" install \
 
 echo "model-switcher installed:"
 echo "  hook:       UserPromptSubmit -> $INSTALL_DIR/complexity_router.py"
+echo "  hook:       PreToolUse(Task)  -> $INSTALL_DIR/agent_router.py"
 echo "  statusline: $INSTALL_DIR/cost_statusline.py"
 echo "  ${AGENT_INFO}"
 if [ -n "$STANDARD_AGENT_INFO" ]; then echo "  ${STANDARD_AGENT_INFO}"; fi

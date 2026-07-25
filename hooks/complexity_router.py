@@ -395,6 +395,121 @@ def routing_ladder(config: dict) -> list[dict]:
     return rungs
 
 
+# Severity for health_warnings(). Only BROKEN interrupts a session.
+BROKEN = "broken"
+ADVICE = "advice"
+
+
+def claude_dir() -> Path:
+    return home_dir().parent
+
+
+def resolve_alias(alias: object, pricing: dict) -> str | None:
+    """Best pricing key for a configured model name ('fable' -> 'claude-fable-5').
+
+    Config names models the way a user types them, including context-window suffixes like
+    'opus[1m]'; the pricing table is keyed by id. Shortest match wins, so 'opus' lands on the
+    current base id rather than an older dated variant.
+    """
+    if not isinstance(alias, str) or not alias.strip() or not isinstance(pricing, dict):
+        return None
+    needle = re.sub(r"\[.*?\]", "", alias).strip().lower()
+    if not needle:
+        return None
+    if alias in pricing:
+        return alias
+    matches = [key for key in pricing if needle in key.lower()]
+    return min(sorted(matches), key=len) if matches else None
+
+
+def _output_rate(key: str | None, pricing: dict) -> float | None:
+    rates = pricing.get(key) if key else None
+    value = rates.get("output") if isinstance(rates, dict) else None
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def health_warnings(config: dict, session_model: object = None, agents_dir: Path | None = None) -> list[tuple]:
+    """Configuration problems detectable without reading a transcript, as (severity, message).
+
+    Severity is the whole point of the split. BROKEN means routing cannot do what the config
+    says — delegation has no agent to reach, or a tier is unreachable — and is worth
+    interrupting a session for. ADVICE means the config works exactly as written and you may
+    not want what it does; that is a report to read, not a notice to receive every session.
+    Nagging about a deliberate choice on every new session is how a warning becomes wallpaper.
+
+    Deliberately cheap — config, one model name and one directory listing — because the hook
+    surfaces the BROKEN ones in-session, where touching the transcript corpus would be far too
+    slow to run on a prompt. The costly checks live in the `status` command instead.
+    """
+    warnings: list[tuple] = []
+    models = config.get("models")
+    pricing = config.get("pricing_usd_per_mtok")
+    pricing = pricing if isinstance(pricing, dict) else {}
+    complex_model = _valid_model(models, "complex")
+    simple_model = _valid_model(models, "simple")
+    session = session_model if isinstance(session_model, str) and session_model.strip() else simple_model
+
+    complex_rate = _output_rate(resolve_alias(complex_model, pricing), pricing)
+    session_rate = _output_rate(resolve_alias(session, pricing), pricing)
+    # A heavy tier is meant to be dearer than the session model — that is the whole shape of the
+    # tool. What is worth reporting is the opposite: delegating to something no more expensive
+    # than what you are already running, where the heavy tier is not a step up at all.
+    if complex_rate is not None and session_rate is not None and complex_rate <= session_rate:
+        warnings.append((ADVICE,
+            f"models.complex '{complex_model}' (${complex_rate:g}/Mtok out) costs no more than your "
+            f"session model '{session}' (${session_rate:g}) — delegation moves work to a model that "
+            "is not a step up, so the heavy tier is not buying you anything"))
+
+    if session_model and simple_model and resolve_alias(session_model, pricing) != resolve_alias(
+        simple_model, pricing
+    ):
+        warnings.append((ADVICE,
+            f"your session runs '{session_model}' but models.simple is '{simple_model}' — the cheap "
+            "tier is configured but not actually in use"))
+
+    for key in ("complex", "standard", "simple"):
+        model = _valid_model(models, key)
+        if model and pricing and resolve_alias(model, pricing) is None:
+            warnings.append((ADVICE,
+                f"models.{key} '{model}' has no entry in pricing_usd_per_mtok, so its cost is invisible"))
+
+    # Only meaningful against a real agents directory. Its absence means this is not an install,
+    # not that an agent went missing, and reporting that would be noise in every sandbox.
+    if agents_dir is not None and agents_dir.is_dir():
+        for tier in ("complex", "standard"):
+            model = _valid_model(models, tier)
+            if not model or (tier == "standard" and tiers_configured(config) != 3):
+                continue
+            expected = f"{agent_name_for(model, tier)}.md"
+            if not (agents_dir / expected).is_file():
+                warnings.append((BROKEN,
+                    f"no agent file '{expected}' — {tier} prompts are told to delegate to an agent "
+                    "that does not exist. Re-run install.sh."))
+
+    complexity = _complexity_section(config)
+    raw_standard = _numeric_setting(complexity, "standard_threshold", DEFAULT_STANDARD_THRESHOLD)
+    if tiers_configured(config) == 3 and raw_standard >= threshold_from(config):
+        warnings.append((BROKEN,
+            f"complexity.standard_threshold ({raw_standard:g}) is not below threshold "
+            f"({threshold_from(config):g}); the middle tier is unreachable as written"))
+    return warnings
+
+
+def in_session_checks_enabled(config: dict) -> bool:
+    checks = config.get("checks")
+    enabled = checks.get("in_session", True) if isinstance(checks, dict) else True
+    return enabled if isinstance(enabled, bool) else True
+
+
+def session_model_from_settings() -> str | None:
+    try:
+        settings = json.loads((claude_dir() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    model = settings.get("model") if isinstance(settings, dict) else None
+    return model if isinstance(model, str) and MODEL_NAME_RE.fullmatch(model) else None
+
+
 def pricing_configured(config: dict) -> bool:
     pricing = config.get("pricing_usd_per_mtok")
     if not isinstance(pricing, dict):
@@ -486,6 +601,26 @@ def build_context(prompt: str, session_id: str, config: dict) -> str:
         tier = select_tier(score, config)
         if tier is not None:
             parts.append(delegation_directive(score, tier, config))
+
+    # Guarded on the session flag first: when the notice has already fired, none of the checks
+    # run at all, so the cost of this is paid once per session rather than once per prompt.
+    if not state.get("health_nagged") and in_session_checks_enabled(config):
+        broken = [
+            message for severity, message
+            in health_warnings(config, session_model_from_settings(), claude_dir() / "agents")
+            if severity == BROKEN
+        ]
+        if broken:
+            listed = "\n".join(f"- {message}" for message in broken)
+            parts.append(
+                "[model-switcher] This install is misconfigured and routing cannot work as "
+                "written:\n" + listed +
+                "\nTell the user about this once, briefly, then carry on with their request. "
+                "'model-switcher status' shows the full picture; "
+                '"checks": {"in_session": false} in config.json silences this.'
+            )
+        state["health_nagged"] = True
+        state_dirty = True
 
     if not pricing_configured(config) and not state.get("pricing_nagged"):
         parts.append(

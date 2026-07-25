@@ -23,6 +23,8 @@ INSTALLED_FILES = (
     "manage_claude_md.py",
     "generate_agent.py",
     "uninstall.py",
+    "status_report.py",
+    "agent_router.py",
     "cli.py",
     "analyze_history.py",
     "update_pricing.py",

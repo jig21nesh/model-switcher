@@ -106,11 +106,12 @@ are withheld because they derive from whatever the operator happened to be worki
 - Scores each prompt locally before Claude sees it
 - Keeps simple prompts on your configured session model
 - Delegates complex prompts to a `heavy-task-*` subagent
+- **Applies the same policy when Claude spawns its own agents** — a `general-purpose` agent handed complex work is rewritten onto the configured tier, so delegated work does not quietly escape the ladder
 - Optionally adds a **third tier** — a `mid-task-*` agent for work that is more than the cheap model but less than the dearest one
 - Names each subagent for its configured model, e.g. `heavy-task-fable`, so the model is visible in the task line
 - **Learns from your own history** which prompts actually become work, and reports the accuracy change before you apply it
 - **Explains any routing decision** without spending a token
-- Tracks turn and session cost from the local transcript, including subagent sidechain usage — priced by cache TTL, so 1-hour cache writes are not billed at the 5-minute rate
+- Tracks turn and session cost from the local transcript **and every subagent this session spawned** — priced by cache TTL, so 1-hour cache writes are not billed at the 5-minute rate
 - **Shows what routing saved**, measured against the dearest model the session actually used — and shows nothing until a session has genuinely spanned two models
 - Uses your own pricing table, refreshable with one command — no network calls from the hook or statusline
 - Can be switched off globally or overridden per project, without uninstalling
@@ -452,6 +453,39 @@ The installer prints the same ladder when it finishes, and `explain` prints it w
 the band your prompt landed in. All three come from one function, so what you are shown is what
 the router will do.
 
+### 1b. Routing Claude's own agents
+
+Your prompt is not the only thing that gets delegated. When Claude spawns a `general-purpose`
+agent, that agent has no model of its own — it inherits your session model — so the work runs
+outside the ladder entirely. In one measured corpus, agent transcripts held **44.5% of all input
+tokens and 73% of all output tokens**, and `Task` was called with `general-purpose` 72 times
+against a configured tier agent once.
+
+A `PreToolUse` hook on `Task` closes that gap: it scores the delegated prompt with the same scorer
+and moves generic agents onto the tier the policy says the work belongs to.
+
+```text
+Claude spawns:  general-purpose  "refactor the auth module and migrate the schema"
+model-switcher: score 8/10 -> COMPLEX -> runs as heavy-task-fable instead
+```
+
+Deliberately narrow, because rewriting a tool call is intrusive:
+
+| Rule | Why |
+|---|---|
+| **Upgrade only, never downgrade** | A caller that named a specific agent knows something the score does not |
+| Only `general-purpose` and `claude` are eligible | They have no model of their own. Set `routing.generic_agents` to change the list |
+| `Explore` is never promoted | It is a cheap read-only search agent; the heavy tier would spend a lot to do little |
+| Top-level spawns only | Inside an agent, promoting would let a tier agent escalate its own helpers |
+| Never rewrites to a missing agent | That would turn a working call into a failing one |
+| Never silent | Every rewrite explains the score, the tier and how to switch it off |
+
+Disable with `{"routing": {"agents": false}}`; it is also off whenever `routing.enabled` is false.
+
+> **Note:** a rewrite sends work to `models.complex`. If that model has no available quota the
+> delegation fails, and that is not detectable offline — the agent file exists and the config is
+> valid. `model-switcher status` reports failed delegations with their reason.
+
 ### 1a. Optional: add a middle tier
 
 With two tiers, everything above the threshold pays top-model rates — including work that is more
@@ -687,7 +721,7 @@ Full scenario tables and findings: [docs/lifecycle-test-report.md](docs/lifecycl
 
 ## How cost is calculated
 
-`statusline/cost_statusline.py` stream-parses the session transcript (`.jsonl`), dedupes streamed assistant messages by message ID, and sums input, output, cache-creation, and cache-read tokens per model — including subagent (sidechain) usage. Cost = tokens × your configured $/MTok rates, computed entirely offline. It is an estimate derived from transcript usage, not your official Anthropic bill.
+`statusline/cost_statusline.py` stream-parses the session transcript (`.jsonl`), dedupes streamed assistant messages by message ID, and sums input, output, cache-creation, and cache-read tokens per model. Claude Code writes each spawned agent to its own file under `<project>/<session-id>/`, so those are read too and attributed to the turn by timestamp — without them, agent-heavy sessions under-report badly. Cost = tokens × your configured $/MTok rates, computed entirely offline. It is an estimate derived from transcript usage, not your official Anthropic bill.
 
 Cache writes are split by TTL: the transcript reports `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens` separately, and each bucket is priced at its own rate. Where that per-TTL breakdown is present it is treated as authoritative — a few entries carry a flat `cache_creation_input_tokens` total that disagrees with the breakdown beside it, and mixing the two would double-count. Entries reporting `usage.speed == "fast"` are priced from the model's `fast` rate block when one is configured.
 

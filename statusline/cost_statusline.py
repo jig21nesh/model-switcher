@@ -101,10 +101,15 @@ def match_pricing(model_id: str, pricing: dict[str, dict]) -> dict | None:
     return resolved[1] if resolved is not None else None
 
 
-def parse_transcript(path: Path) -> tuple[list[dict], int]:
-    """Return deduped assistant usage entries and the line number of the last real user message."""
+def parse_transcript(path: Path) -> tuple[list[dict], int, str]:
+    """Deduped assistant usage, the line of the last real user message, and its timestamp.
+
+    The timestamp is what lets subagent work be attributed to the current turn: it lives in a
+    different file, so there is no line number to compare against.
+    """
     entries: dict[str, dict] = {}
     last_user_line = -1
+    last_user_ts = ""
     with path.open(encoding="utf-8", errors="replace") as f:
         for i, line in enumerate(f):
             try:
@@ -115,6 +120,8 @@ def parse_transcript(path: Path) -> tuple[list[dict], int]:
                 continue
             if obj.get("type") == "user" and not obj.get("isMeta") and not obj.get("isSidechain"):
                 last_user_line = i
+                stamp = obj.get("timestamp")
+                last_user_ts = stamp if isinstance(stamp, str) else ""
             elif obj.get("type") == "assistant":
                 message = obj.get("message")
                 if not isinstance(message, dict):
@@ -124,8 +131,52 @@ def parse_transcript(path: Path) -> tuple[list[dict], int]:
                     continue
                 # Streaming rewrites the same message id; the last entry carries final usage.
                 msg_id = message.get("id") or obj.get("uuid") or f"line-{i}"
-                entries[msg_id] = {"model": str(message.get("model") or ""), "usage": usage, "line": i}
-    return list(entries.values()), last_user_line
+                stamp = obj.get("timestamp")
+                entries[msg_id] = {
+                    "model": str(message.get("model") or ""), "usage": usage, "line": i,
+                    "timestamp": stamp if isinstance(stamp, str) else "",
+                }
+    return list(entries.values()), last_user_line, last_user_ts
+
+
+def subagent_transcripts(transcript: Path) -> list[Path]:
+    """This session's subagent transcripts, which Claude Code writes outside the session file.
+
+    Layout is <project>/<session-id>.jsonl for the session and <project>/<session-id>/**/*.jsonl
+    for every agent it spawned (plain subagents under subagents/, workflow agents under wf_*/).
+    Naming the directory after the session id makes the attribution exact rather than a guess.
+    Missing directory simply means no agent ran.
+    """
+    root = transcript.with_suffix("")
+    try:
+        if not root.is_dir():
+            return []
+        return sorted(path for path in root.rglob("*.jsonl") if path.is_file())
+    except OSError:
+        return []
+
+
+def collect_entries(transcript: Path) -> tuple[list[dict], int]:
+    """Every assistant entry that this session paid for, session file and subagents alike.
+
+    Subagent entries carry no line number in the session file, so their place in the current
+    turn is decided by timestamp against the last user message. Where a transcript has no
+    timestamps at all, they count towards the session but never towards the turn — understating
+    the turn is better than attributing an hour of agent work to whatever was typed last.
+    """
+    entries, last_user_line, last_user_ts = parse_transcript(transcript)
+    for path in subagent_transcripts(transcript):
+        try:
+            spawned, _, _ = parse_transcript(path)
+        except OSError as exc:
+            logger.warning("cannot read subagent transcript: %s", exc)
+            continue
+        for entry in spawned:
+            in_turn = bool(last_user_ts) and entry["timestamp"] >= last_user_ts
+            # Sorts after last_user_line when in the turn, before it otherwise.
+            entry["line"] = last_user_line + 1 if in_turn else -1
+            entries.append(entry)
+    return entries, last_user_line
 
 
 def cache_write_tokens(usage: dict) -> tuple[int, int, int]:
@@ -344,7 +395,7 @@ def cost_segment(data: dict, config: dict) -> str:
     last_user_line = -1
     if isinstance(transcript, str) and transcript:
         try:
-            entries, last_user_line = parse_transcript(Path(transcript))
+            entries, last_user_line = collect_entries(Path(transcript))
         except OSError as exc:
             logger.warning("cannot read transcript: %s", exc)
 

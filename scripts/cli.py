@@ -14,6 +14,7 @@ from pathlib import Path
 
 import analyze_history
 import complexity_router
+import status_report
 import uninstall as uninstall_module
 import update_pricing
 
@@ -133,20 +134,40 @@ def print_ladder(config: dict, highlight: str | None = None, marked: bool = True
 
 
 def cmd_tiers(args: argparse.Namespace) -> int:
-    target = args.config or config_path()
+    config = _read_config(args.config or config_path())
+    if config is None:
+        return 2
+    print_ladder(config, marked=False)
+    return 0
+
+
+def _read_config(target: Path) -> dict | None:
     if not target.exists():
         print(f"no config at {target} — run ./install.sh first", file=sys.stderr)
-        return 2
+        return None
     try:
         config = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         print(f"cannot read {target}: {exc}", file=sys.stderr)
-        return 2
+        return None
     if not isinstance(config, dict):
         print(f"{target} is not a JSON object", file=sys.stderr)
+        return None
+    return config
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    config = _read_config(args.config or config_path())
+    if config is None:
         return 2
+    home = home_dir()
+    session_model = complexity_router.session_model_from_settings()
+    status_report.render_summary(config, home, session_model)
     print_ladder(config, marked=False)
-    return 0
+    print()
+    scan = status_report.scan_transcripts(args.transcripts or analyze_history.DEFAULT_TRANSCRIPTS)
+    # Non-zero when something is actually broken, so this is usable as a check in a script.
+    return 1 if status_report.render_checks(config, home, session_model, scan) else 0
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -200,6 +221,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-classifier", action="store_true", help="score with the built-in signals only"
     )
     explain.set_defaults(handler=cmd_explain)
+
+    status = subcommands.add_parser(
+        "status",
+        help="show what this install is configured to do, and what is wrong with it",
+    )
+    status.add_argument("--config", type=Path, default=None, help="config.json to read (default: your install)")
+    status.add_argument(
+        "--transcripts", type=Path, default=None,
+        help=f"directory of transcripts to check (default: {analyze_history.DEFAULT_TRANSCRIPTS})",
+    )
+    status.set_defaults(handler=cmd_status)
 
     tiers = subcommands.add_parser(
         "tiers",
