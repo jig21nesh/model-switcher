@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jig21nesh/model-switcher/blob/main/config/classifier.schema.json",
+  "title": "model-switcher classifier",
+  "description": "Learned prompt-routing weights. Deliberately tool-agnostic: applying it needs only a JSON parser and the ability to split a string into words.",
+  "type": "object",
+  "required": ["schema_version", "scoring"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Consumers must ignore an artifact whose version they do not recognise."
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "Metadata only. Never read while scoring — scoring must stay deterministic."
+    },
+    "generator": {
+      "type": "string",
+      "description": "What produced this file, e.g. model-switcher/analyze_history."
+    },
+    "corpus": {
+      "type": "object",
+      "description": "Aggregate counts describing the evidence. Contains no prompt text.",
+      "additionalProperties": true,
+      "properties": {
+        "sessions": { "type": "integer", "minimum": 0 },
+        "prompts": { "type": "integer", "minimum": 0 },
+        "heavy": { "type": "integer", "minimum": 0 },
+        "light": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "required": ["terms"],
+      "additionalProperties": true,
+      "properties": {
+        "max_adjustment": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Absolute cap on the summed adjustment, so a skewed artifact cannot dominate a host's own signals."
+        },
+        "min_session_support": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many distinct sessions a term had to appear in to be included."
+        },
+        "terms": {
+          "type": "object",
+          "description": "term -> weight. Positive predicts substantial work, negative predicts a lookup.",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]{2,23}$" },
+          "additionalProperties": { "type": "number", "minimum": -1.5, "maximum": 1.5 }
+        }
+      }
+    }
+  }
+}

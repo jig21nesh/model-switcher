@@ -172,6 +172,40 @@ Capped back to simple: short pure questions with no task verb, definitional ques
 
 Ignored by scoring: slash commands, local command output, agent-relay messages, and subagent contexts. The router reads at most the first 10 KB of a prompt, so huge pastes cannot stall submission — put your request *before* a large paste, because an ask that lands past the 10 KB cutoff is not scored and the prompt may route as simple.
 
+### Teaching it from your own history
+
+The built-in list is a fixed guess. `learn` reads your local transcripts and asks a different
+question of every past prompt: *did it actually become work?* Tool calls, file edits and spawned
+subagents are all recorded, so the answer is observable rather than assumed.
+
+```sh
+./bin/model-switcher learn          # analyse and write a candidate — routing unchanged
+./bin/model-switcher learn --apply  # promote the candidate to live
+```
+
+It prints a before/after comparison measured on **your own** history, so you can see whether it
+helps before committing:
+
+```text
+corpus: 2,124 usable prompts from 101 sessions (533 became real work, 1,591 did not)
+
+routing accuracy at threshold 5, measured on your own history:
+                precision   recall     F1   wasted   missed
+  built-in          33.0%    34.3%   33.6      372      350
+  with terms        41.9%    42.4%   42.1      314      307
+```
+
+Nothing changes until you pass `--apply`, and nothing leaves your machine. The output is a JSON
+weight table — no prompt text, no hashes, no paths — filtered so a term must recur across at least
+three separate sessions and ten occurrences before it can appear, and shaped to exclude hostnames,
+identifiers and API keys. Full detail, including the exact tokenization other tools need in order
+to consume it: [`docs/classifier-schema.md`](docs/classifier-schema.md).
+
+> [!NOTE]
+> The label is a proxy. A hard question answered correctly in two tool calls counts as "light", so
+> the weights optimise for *became work*, which correlates with *needed the better model* without
+> being identical to it. Review the candidate before applying it.
+
 Dry-run any prompt without spending tokens:
 
 ```sh

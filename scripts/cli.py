@@ -6,10 +6,13 @@ network when a subcommand explicitly asks for it.
 """
 
 import argparse
+import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+import analyze_history
 import update_pricing
 
 
@@ -38,6 +41,37 @@ def cmd_pricing(args: argparse.Namespace) -> int:
     return update_pricing.main(forwarded)
 
 
+def configured_threshold(default: float = 5.0) -> float:
+    """Read the user's own threshold so the learn report measures the routing they actually run."""
+    try:
+        config = json.loads(config_path().read_text(encoding="utf-8"))
+        value = config["complexity"]["threshold"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return float(value)
+
+
+def cmd_learn(args: argparse.Namespace) -> int:
+    home = home_dir()
+    if not home.is_dir():
+        print(f"no install at {home} — run ./install.sh first", file=sys.stderr)
+        return 2
+    forwarded = [
+        "--home", str(home),
+        "--threshold", str(args.threshold if args.threshold is not None else configured_threshold()),
+        "--generated-at", datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    ]
+    for directory in args.transcripts or []:
+        forwarded += ["--transcripts", str(directory)]
+    if args.max_sessions is not None:
+        forwarded += ["--max-sessions", str(args.max_sessions)]
+    if args.apply:
+        forwarded.append("--apply")
+    return analyze_history.main(forwarded)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="model-switcher", description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -51,6 +85,19 @@ def build_parser() -> argparse.ArgumentParser:
     pricing.add_argument("--offline", action="store_true", help="use the table bundled in this repo")
     pricing.add_argument("--yes", action="store_true", help="apply the changes (default is check-only)")
     pricing.set_defaults(handler=cmd_pricing)
+
+    learn = subcommands.add_parser(
+        "learn",
+        help="learn routing weights from which of your past prompts became real work",
+    )
+    learn.add_argument(
+        "--transcripts", type=Path, action="append", default=None,
+        help=f"directory of transcripts, repeatable (default: {analyze_history.DEFAULT_TRANSCRIPTS})",
+    )
+    learn.add_argument("--max-sessions", type=int, default=None, help="cap how many sessions are read")
+    learn.add_argument("--threshold", type=float, default=None, help="threshold to measure against")
+    learn.add_argument("--apply", action="store_true", help="promote the candidate to the live classifier")
+    learn.set_defaults(handler=cmd_learn)
 
     return parser
 

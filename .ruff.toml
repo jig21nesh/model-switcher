@@ -11,6 +11,7 @@ select = ["E", "F", "I", "N", "W"]
 # tests/conftest.py puts hooks/, statusline/ and scripts/ on sys.path, so these are
 # imported by bare name. Without this they would be sorted as third-party.
 known-first-party = [
+    "analyze_history",
     "cli",
     "complexity_router",
     "cost_statusline",
