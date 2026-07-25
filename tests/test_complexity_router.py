@@ -432,3 +432,136 @@ class TestProjectOverride:
         out = router.run(hook_input(COMPLEX_PROMPT, cwd=str(project)))
         assert "heavy-task-opus" in out
         assert "IGNORE" not in out
+
+
+THREE_TIER = {
+    "models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"},
+    "complexity": {"threshold": 5, "standard_threshold": 3},
+    "pricing_usd_per_mtok": CONFIGURED["pricing_usd_per_mtok"],
+}
+MODERATE_PROMPT = "fix the failing test in the api config"
+
+
+class TestTierSelection:
+    @pytest.mark.parametrize(
+        "score,expected",
+        [(0, None), (2, None), (3, "standard"), (4, "standard"), (5, "complex"), (10, "complex")],
+    )
+    def test_three_tier_bands(self, score, expected):
+        assert router.select_tier(score, THREE_TIER) == expected
+
+    @pytest.mark.parametrize("score,expected", [(3, None), (4, None), (5, "complex")])
+    def test_two_tier_leaves_the_middle_band_in_session(self, score, expected):
+        assert router.select_tier(score, CONFIGURED) == expected
+
+    def test_a_middle_model_alone_enables_three_tiers(self):
+        assert router.tiers_configured(THREE_TIER) == 3
+
+    def test_absent_middle_model_means_two_tiers(self):
+        assert router.tiers_configured(CONFIGURED) == 2
+
+    def test_tiers_two_disables_a_configured_middle_model(self):
+        config = {**THREE_TIER, "routing": {"tiers": 2}}
+        assert router.tiers_configured(config) == 2
+        assert router.select_tier(4, config) is None
+
+    def test_tiers_three_without_a_middle_model_falls_back(self):
+        assert router.tiers_configured({**CONFIGURED, "routing": {"tiers": 3}}) == 2
+
+    @pytest.mark.parametrize("requested", [True, False, "3", 5, 0, None, [3], {"tiers": 3}])
+    def test_invalid_tiers_falls_back_to_auto(self, requested):
+        config = {**THREE_TIER, "routing": {"tiers": requested}}
+        assert router.tiers_configured(config) == 3
+
+    @pytest.mark.parametrize("model", ["rm -rf /", "a b", "x" * 65, "", None, 5, {"id": "sonnet"}])
+    def test_an_implausible_middle_model_is_refused(self, model):
+        config = {**THREE_TIER, "models": {"complex": "fable", "simple": "haiku", "standard": model}}
+        assert router.tiers_configured(config) == 2
+
+
+class TestStandardThreshold:
+    def test_defaults_when_absent(self):
+        config = {**THREE_TIER, "complexity": {"threshold": 5}}
+        assert router.standard_threshold_from(config) == router.DEFAULT_STANDARD_THRESHOLD
+
+    @pytest.mark.parametrize("value", [5, 6, 10, 99])
+    def test_is_forced_below_the_complex_threshold(self, value):
+        config = {**THREE_TIER, "complexity": {"threshold": 5, "standard_threshold": value}}
+        assert router.standard_threshold_from(config) < router.threshold_from(config)
+
+    def test_collapses_safely_when_the_complex_threshold_is_the_minimum(self):
+        config = {**THREE_TIER, "complexity": {"threshold": 1, "standard_threshold": 1}}
+        assert router.standard_threshold_from(config) == 1.0
+        assert router.select_tier(1, config) == "complex"
+
+    @pytest.mark.parametrize("value", [True, "3", None, [3]])
+    def test_invalid_values_fall_back_to_the_default(self, value):
+        config = {**THREE_TIER, "complexity": {"threshold": 5, "standard_threshold": value}}
+        assert router.standard_threshold_from(config) == router.DEFAULT_STANDARD_THRESHOLD
+
+
+class TestAgentNaming:
+    @pytest.mark.parametrize(
+        "model,tier,expected",
+        [
+            ("fable", "complex", "heavy-task-fable"),
+            ("sonnet", "standard", "mid-task-sonnet"),
+            ("claude-opus-5[1m]", "complex", "heavy-task-claude-opus-5-1m"),
+            ("!!!", "standard", "mid-task"),
+        ],
+    )
+    def test_names_are_prefixed_per_tier(self, model, tier, expected):
+        assert router.agent_name_for(model, tier) == expected
+
+    def test_an_unknown_tier_falls_back_to_the_heavy_prefix(self):
+        assert router.agent_name_for("fable", "nonsense").startswith("heavy-task")
+
+
+class TestThreeTierDirectives:
+    def test_a_moderate_prompt_names_the_middle_agent(self, home):
+        write_config(home, THREE_TIER)
+        context = json.loads(router.run(hook_input(MODERATE_PROMPT)))["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        assert "classified MODERATE" in context
+        assert "mid-task-sonnet" in context and "heavy-task" not in context
+
+    def test_a_complex_prompt_still_names_the_heavy_agent(self, home):
+        write_config(home, THREE_TIER)
+        context = json.loads(router.run(hook_input(COMPLEX_PROMPT)))["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        assert "classified COMPLEX" in context and "heavy-task-fable" in context
+
+    def test_the_directive_quotes_the_band_it_crossed(self, home):
+        write_config(home, THREE_TIER)
+        moderate = json.loads(router.run(hook_input(MODERATE_PROMPT)))["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        assert "(threshold 3)" in moderate
+
+    def test_a_simple_prompt_stays_in_session_with_three_tiers(self, home):
+        write_config(home, THREE_TIER)
+        assert router.run(hook_input("what does this function do?")) == ""
+
+    def test_disabled_routing_silences_every_tier(self, home):
+        write_config(home, {**THREE_TIER, "routing": {"enabled": False}})
+        assert router.run(hook_input(MODERATE_PROMPT)) == ""
+        assert router.run(hook_input(COMPLEX_PROMPT)) == ""
+
+    def test_a_project_can_opt_out_of_the_middle_tier(self, home, tmp_path):
+        write_config(home, THREE_TIER)
+        project = write_project_config(tmp_path / "proj", {"routing": {"tiers": 2}})
+        assert router.run(hook_input(MODERATE_PROMPT, cwd=str(project))) == ""
+        assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT, cwd=str(project)))
+
+    def test_a_project_can_retune_the_middle_band(self, home, tmp_path):
+        write_config(home, THREE_TIER)
+        project = write_project_config(tmp_path / "proj", {"complexity": {"standard_threshold": 1}})
+        context = router.run(hook_input("rename this variable", cwd=str(project)))
+        assert "mid-task-sonnet" in context
+
+    def test_an_invalid_project_tier_override_keeps_the_global_value(self, home, tmp_path):
+        write_config(home, THREE_TIER)
+        project = write_project_config(tmp_path / "proj", {"routing": {"tiers": "three"}})
+        assert "mid-task-sonnet" in router.run(hook_input(MODERATE_PROMPT, cwd=str(project)))

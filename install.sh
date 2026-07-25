@@ -96,10 +96,23 @@ cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/statusline/cost_statusline.
 
 COMPLEX_MODEL="$(read_config_model complex fable)"
 SIMPLE_MODEL="$(read_config_model simple sonnet)"
+# Optional middle tier. Empty means a two-tier install, which is the default.
+STANDARD_MODEL="$(read_config_model standard "")"
 
 AGENT_INFO=$(python3 "$REPO_DIR/scripts/generate_agent.py" install \
   --source "$REPO_DIR/agents/heavy-task.md" --agents-dir "$AGENTS_DIR" \
-  --model "$COMPLEX_MODEL" --manifest "$MANIFEST")
+  --model "$COMPLEX_MODEL" --manifest "$MANIFEST" --tier complex)
+
+if [ -n "$STANDARD_MODEL" ]; then
+  STANDARD_AGENT_INFO=$(python3 "$REPO_DIR/scripts/generate_agent.py" install \
+    --source "$REPO_DIR/agents/mid-task.md" --agents-dir "$AGENTS_DIR" \
+    --model "$STANDARD_MODEL" --manifest "$MANIFEST" --tier standard)
+else
+  # models.standard was removed since the last install; drop the agent it left behind.
+  python3 "$REPO_DIR/scripts/generate_agent.py" uninstall \
+    --agents-dir "$AGENTS_DIR" --manifest "$MANIFEST" --tier standard >/dev/null
+  STANDARD_AGENT_INFO=""
+fi
 
 SET_MODEL_ARGS=()
 if [ "$SKIP_MODEL" -eq 0 ]; then SET_MODEL_ARGS=(--set-model "$SIMPLE_MODEL"); fi
@@ -115,6 +128,13 @@ echo "model-switcher installed:"
 echo "  hook:       UserPromptSubmit -> $INSTALL_DIR/complexity_router.py"
 echo "  statusline: $INSTALL_DIR/cost_statusline.py"
 echo "  ${AGENT_INFO}"
+if [ -n "$STANDARD_AGENT_INFO" ]; then
+  echo "  ${STANDARD_AGENT_INFO}"
+  echo "  routing:    3 tiers — simple in-session, moderate -> mid-task, complex -> heavy-task"
+else
+  echo "  routing:    2 tiers — simple in-session, complex -> heavy-task"
+  echo "              (set models.standard in config.json and re-run for a middle tier)"
+fi
 echo "  policy:     managed block in $CLAUDE_DIR/CLAUDE.md"
 if [ -f "$CLAUDE_DIR/CLAUDE.md.model-switcher.bak" ]; then
   echo "              (pre-install backup: $CLAUDE_DIR/CLAUDE.md.model-switcher.bak)"

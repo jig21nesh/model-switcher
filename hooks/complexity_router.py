@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 PRICING_URL = "https://claude.com/pricing"
 DEFAULT_THRESHOLD = 5
+# Only consulted when a third tier is configured; the middle band is [standard, complex).
+DEFAULT_STANDARD_THRESHOLD = 3
+# Agent filename prefixes, kept in sync with scripts/generate_agent.py. The top tier keeps its
+# original prefix so existing installs, manifests and CLAUDE.md policy blocks stay valid.
+TIER_PREFIXES = {"complex": "heavy-task", "standard": "mid-task"}
+TIER_LABELS = {"complex": "COMPLEX", "standard": "MODERATE"}
 # A project override is a small settings file; anything bigger is not one.
 PROJECT_CONFIG_MAX_BYTES = 64 * 1024
 # Scoring beyond this many characters adds no signal and regex work on huge pastes must stay off
@@ -107,9 +113,17 @@ def load_project_config(cwd: object) -> dict:
 
 # An override value that fails its type check is dropped so the global value stays in effect —
 # ADR-0003: override failures fall open to the global config, never to hardcoded defaults.
+def _is_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float))
+
+
 _OVERRIDE_KEY_TYPES = {
     ("routing", "enabled"): lambda v: isinstance(v, bool),
-    ("complexity", "threshold"): lambda v: not isinstance(v, bool) and isinstance(v, (int, float)),
+    # A project may drop to two tiers or opt into three, but never name a model: the agent files
+    # are generated from the global config at install time (ADR-0003).
+    ("routing", "tiers"): lambda v: v == "auto" or (not isinstance(v, bool) and v in (2, 3)),
+    ("complexity", "threshold"): _is_number,
+    ("complexity", "standard_threshold"): _is_number,
 }
 
 
@@ -193,37 +207,84 @@ def score_prompt(prompt: str) -> int:
     return max(0, min(score, 10))
 
 
-def threshold_from(config: dict) -> float:
-    complexity = config.get("complexity")
-    if not isinstance(complexity, dict):
-        complexity = {}
-    value = complexity.get("threshold", DEFAULT_THRESHOLD)
+def _numeric_setting(complexity: dict, key: str, default: int) -> float:
+    value = complexity.get(key, default)
     # bool is a subclass of int; "threshold": true must not become threshold 1.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        logger.warning("invalid complexity.threshold %r, using default %s", value, DEFAULT_THRESHOLD)
-        return float(DEFAULT_THRESHOLD)
+        logger.warning("invalid complexity.%s %r, using default %s", key, value, default)
+        return float(default)
     clamped = max(1.0, min(float(value), 10.0))
     if clamped != float(value):
-        logger.warning("complexity.threshold %r clamped to %s", value, clamped)
+        logger.warning("complexity.%s %r clamped to %s", key, value, clamped)
     return clamped
 
 
-def _heavy_agent_name(model: str) -> str:
+def _complexity_section(config: dict) -> dict:
+    complexity = config.get("complexity")
+    return complexity if isinstance(complexity, dict) else {}
+
+
+def threshold_from(config: dict) -> float:
+    return _numeric_setting(_complexity_section(config), "threshold", DEFAULT_THRESHOLD)
+
+
+def standard_threshold_from(config: dict) -> float:
+    """Lower edge of the middle band. Always strictly below the complex threshold."""
+    complexity = _complexity_section(config)
+    threshold = threshold_from(config)
+    value = _numeric_setting(complexity, "standard_threshold", DEFAULT_STANDARD_THRESHOLD)
+    if value >= threshold:
+        # Overlapping bands would make the middle tier unreachable and the config a lie.
+        adjusted = max(1.0, threshold - 1.0)
+        logger.warning("complexity.standard_threshold %g is not below threshold %g, using %g",
+                       value, threshold, adjusted)
+        return adjusted
+    return value
+
+
+def agent_name_for(model: str, tier: str = "complex") -> str:
     # Keep in sync with scripts/generate_agent.py: the installer stamps this name into the agent
     # file so the model is visible in Claude Code's task line (e.g. heavy-task-fable).
+    prefix = TIER_PREFIXES.get(tier, TIER_PREFIXES["complex"])
     suffix = re.sub(r"[^a-z0-9]+", "-", model.lower()).strip("-")
-    return f"heavy-task-{suffix}" if suffix else "heavy-task"
+    return f"{prefix}-{suffix}" if suffix else prefix
+
+
+def _valid_model(models: object, key: str) -> str | None:
+    # Names are interpolated into Claude's context: only plausible model identifiers qualify.
+    if not isinstance(models, dict):
+        return None
+    value = models.get(key)
+    return value if isinstance(value, str) and MODEL_NAME_RE.fullmatch(value) else None
 
 
 def models_configured(config: dict) -> bool:
     models = config.get("models")
-    if not isinstance(models, dict):
-        return False
-    # Names are interpolated into Claude's context: only plausible model identifiers qualify.
-    return all(
-        isinstance(models.get(key), str) and MODEL_NAME_RE.fullmatch(models[key])
-        for key in ("complex", "simple")
-    )
+    return all(_valid_model(models, key) is not None for key in ("complex", "simple"))
+
+
+def tiers_configured(config: dict) -> int:
+    """How many model tiers are in play: 3 when a valid middle model exists and is not disabled."""
+    has_standard = _valid_model(config.get("models"), "standard") is not None
+    routing = config.get("routing")
+    requested = routing.get("tiers", "auto") if isinstance(routing, dict) else "auto"
+    if requested == "auto" or isinstance(requested, bool) or requested not in (2, 3):
+        if requested != "auto":
+            logger.warning("invalid routing.tiers %r, falling back to auto", requested)
+        return 3 if has_standard else 2
+    if requested == 3 and not has_standard:
+        logger.warning("routing.tiers is 3 but models.standard is missing or invalid, using 2 tiers")
+        return 2
+    return int(requested)
+
+
+def select_tier(score: float, config: dict) -> str | None:
+    """Which tier a score routes to, or None to answer in-session."""
+    if score >= threshold_from(config):
+        return "complex"
+    if tiers_configured(config) == 3 and score >= standard_threshold_from(config):
+        return "standard"
+    return None
 
 
 def pricing_configured(config: dict) -> bool:
@@ -280,6 +341,22 @@ def _cleanup_stale_state(state_dir: Path) -> None:
             continue
 
 
+def delegation_directive(score: int, tier: str, config: dict) -> str:
+    model = config["models"][tier]
+    agent = agent_name_for(model, tier)
+    edge = threshold_from(config) if tier == "complex" else standard_threshold_from(config)
+    return (
+        f"[model-switcher] MANDATORY ROUTING POLICY — complexity score {score}/10 (threshold "
+        f"{edge:g}): this prompt is classified {TIER_LABELS[tier]}. This session runs on the low-cost "
+        f"model tier; work at this level must be executed by the '{agent}' subagent (configured "
+        f"model: {model}). Do not perform this task yourself: your FIRST action must be "
+        f"spawning '{agent}' via your subagent tool (named Agent or Task depending on version), "
+        "passing the user's full request and any context it needs. Relay the subagent's result to "
+        "the user afterwards. Answer directly only if the user's message explicitly says not to "
+        "delegate."
+    )
+
+
 def build_context(prompt: str, session_id: str, config: dict) -> str:
     parts: list[str] = []
     state_path = _state_path(session_id)
@@ -297,21 +374,10 @@ def build_context(prompt: str, session_id: str, config: dict) -> str:
             state["models_nagged"] = True
             state_dirty = True
     else:
-        threshold = threshold_from(config)
         score = score_prompt(prompt)
-        if score >= threshold:
-            complex_model = config["models"]["complex"]
-            agent = _heavy_agent_name(complex_model)
-            parts.append(
-                f"[model-switcher] MANDATORY ROUTING POLICY — complexity score {score}/10 (threshold "
-                f"{threshold:g}): this prompt is classified COMPLEX. This session runs on the low-cost "
-                f"model tier; complex work must be executed by the '{agent}' subagent (configured "
-                f"model: {complex_model}). Do not perform this task yourself: your FIRST action must be "
-                f"spawning '{agent}' via your subagent tool (named Agent or Task depending on version), "
-                "passing the user's full request and any context it needs. Relay the subagent's result to "
-                "the user afterwards. Answer directly only if the user's message explicitly says not to "
-                "delegate."
-            )
+        tier = select_tier(score, config)
+        if tier is not None:
+            parts.append(delegation_directive(score, tier, config))
 
     if not pricing_configured(config) and not state.get("pricing_nagged"):
         parts.append(
