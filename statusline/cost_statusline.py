@@ -27,6 +27,9 @@ MAX_RATE_USD_PER_MTOK = 10_000.0
 DEFAULT_SEGMENTS = ("turn", "session", "saved", "tokens", "routing")
 # Below half a cent, a savings figure is noise.
 SAVINGS_MIN_USD = 0.005
+# Savings are only measurable once a session has spanned more than one model. With a single
+# model in the transcript nothing was ever routed, so any figure would be a hypothetical.
+MIN_MODELS_FOR_SAVINGS = 2
 
 
 def home_dir() -> Path:
@@ -77,14 +80,25 @@ def usable_pricing(config: dict) -> dict[str, dict]:
     return usable
 
 
-def match_pricing(model_id: str, pricing: dict[str, dict]) -> dict | None:
+def resolve_pricing(model_id: str, pricing: dict[str, dict]) -> tuple[str, dict] | None:
+    """Resolve a transcript model id to the (pricing key, rates) that price it.
+
+    The key matters as well as the rates: two ids that resolve to the same entry are the
+    same model for the purpose of deciding whether a session actually spanned tiers.
+    """
     if model_id in pricing:
-        return pricing[model_id]
+        return model_id, pricing[model_id]
     # Dated releases (claude-sonnet-5-20250929) match their base entry (claude-sonnet-5).
     prefixes = [key for key in pricing if model_id.startswith(key)]
     if prefixes:
-        return pricing[max(prefixes, key=len)]
+        key = max(prefixes, key=len)
+        return key, pricing[key]
     return None
+
+
+def match_pricing(model_id: str, pricing: dict[str, dict]) -> dict | None:
+    resolved = resolve_pricing(model_id, pricing)
+    return resolved[1] if resolved is not None else None
 
 
 def parse_transcript(path: Path) -> tuple[list[dict], int]:
@@ -169,44 +183,33 @@ def format_tokens(count: int) -> str:
     return str(count)
 
 
-def baseline_model(config: dict, pricing: dict[str, dict]) -> str | None:
-    """The pricing entry representing 'if all of this had run on the expensive model'.
+def baseline_model(config: dict, pricing: dict[str, dict], observed: set[str]) -> str | None:
+    """The model to price the whole session at for the 'saved' counterfactual.
 
-    config names a model by alias ("fable"); the pricing table is keyed by id
-    ("claude-fable-5"), so the two have to be reconciled.
+    Only models the session actually ran on are eligible. Taking the baseline from config
+    (models.complex) instead invents a counterfactual that was never on the table: a session
+    running entirely on a model exactly half the price of models.complex reports "saved 50%"
+    whether or not a single prompt was ever routed, because the ratio, not the routing,
+    produced the number. What can honestly be measured is what did run.
     """
     statusline = config.get("statusline")
     if isinstance(statusline, dict):
         explicit = statusline.get("savings_baseline")
         if isinstance(explicit, str) and explicit in pricing:
             return explicit
-
-    models = config.get("models")
-    alias = models.get("complex") if isinstance(models, dict) else None
-    if not isinstance(alias, str) or not alias.strip():
+    candidates = [key for key in observed if key in pricing]
+    if not candidates:
         return None
-    if alias in pricing:
-        return alias
-    matches = [key for key in pricing if alias.lower() in key.lower()]
-    if not matches:
-        return None
-    # Prefer the shortest matching key: base ids ("claude-sonnet-5") are shorter than older or
-    # dated variants ("claude-sonnet-4-6"), so this lands on what the alias most likely meant.
-    # Where that is also the cheaper entry it understates savings, which is the safer direction
-    # to be wrong in. Sorting first keeps the choice stable whatever order the config was in.
-    return min(sorted(matches), key=lambda key: (len(key), -pricing[key]["output"]))
+    # Sorted first so ties resolve identically whatever order the transcript was read in.
+    return max(sorted(candidates), key=lambda key: pricing[key]["output"])
 
 
 def summarise(entries: list[dict], pricing: dict[str, dict], config: dict, last_user_line: int) -> dict:
-    baseline_rates = None
-    key = baseline_model(config, pricing)
-    if key is not None:
-        baseline_rates = pricing[key]
-
     totals = {
-        "turn": 0.0, "session": 0.0, "baseline": 0.0,
-        "tokens_in": 0, "tokens_out": 0, "unknown": set(), "baseline_model": key,
+        "turn": 0.0, "session": 0.0, "baseline": 0.0, "tokens_in": 0, "tokens_out": 0,
+        "unknown": set(), "baseline_model": None, "models": set(),
     }
+    priced: list[dict] = []
     for entry in entries:
         usage = entry["usage"]
         totals["tokens_in"] += (
@@ -215,16 +218,24 @@ def summarise(entries: list[dict], pricing: dict[str, dict], config: dict, last_
             + _tokens(usage, "cache_read_input_tokens")
         )
         totals["tokens_out"] += _tokens(usage, "output_tokens")
-        rates = match_pricing(entry["model"], pricing)
-        if rates is None:
+        resolved = resolve_pricing(entry["model"], pricing)
+        if resolved is None:
             totals["unknown"].add(entry["model"] or "unknown")
             continue
+        key, rates = resolved
+        totals["models"].add(key)
         cost = usage_cost(usage, effective_rates(usage, rates))
         totals["session"] += cost
         if entry["line"] > last_user_line:
             totals["turn"] += cost
-        if baseline_rates is not None:
-            totals["baseline"] += usage_cost(usage, effective_rates(usage, baseline_rates))
+        priced.append(usage)
+
+    if len(totals["models"]) >= MIN_MODELS_FOR_SAVINGS:
+        key = baseline_model(config, pricing, totals["models"])
+        if key is not None:
+            rates = pricing[key]
+            totals["baseline"] = sum(usage_cost(usage, effective_rates(usage, rates)) for usage in priced)
+            totals["baseline_model"] = key
     return totals
 
 
@@ -254,12 +265,15 @@ def _segment_tokens(totals: dict, _config: dict) -> str:
 
 
 def _segment_saved(totals: dict, _config: dict) -> str | None:
-    # A counterfactual, not a bill: what the same tokens would have cost entirely on the heavy
-    # model. Silent when nothing was saved, which is the honest answer when routing is off.
+    # What this session's own tokens would have cost had every one of them run on the dearest
+    # model it actually used. Names that model, because a bare percentage invites the reader to
+    # assume a baseline that was never measured. Silent when there is nothing real to report.
     saved = totals["baseline"] - totals["session"]
     if totals["baseline"] <= 0 or saved <= SAVINGS_MIN_USD:
         return None
-    return f"saved {format_cost(saved)} ({saved / totals['baseline'] * 100:.0f}%)"
+    against = str(totals.get("baseline_model") or "").removeprefix("claude-")
+    percent = saved / totals["baseline"] * 100
+    return f"saved {format_cost(saved)} ({percent:.0f}%{f' vs {against}' if against else ''})"
 
 
 def _segment_routing(_totals: dict, config: dict) -> str | None:

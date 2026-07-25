@@ -15,7 +15,8 @@
   "statusline": {
     "wrap_command": null,
     "segments": ["turn", "session", "saved", "tokens", "routing"],
-    "savings_baseline": null
+    "savings_baseline": null,
+    "savings_baseline_note": "null derives it from the dearest model the session actually ran on. Set a pricing key to pin it. Either way, savings stay hidden until a session spans two priced models."
   },
   "pricing_usd_per_mtok": {
     "claude-fable-5": { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00 },

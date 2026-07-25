@@ -100,7 +100,7 @@ happened to be working on.*
 - **Learns from your own history** which prompts actually become work, and reports the accuracy change before you apply it
 - **Explains any routing decision** without spending a token
 - Tracks turn and session cost from the local transcript, including subagent sidechain usage — priced by cache TTL, so 1-hour cache writes are not billed at the 5-minute rate
-- **Shows what routing saved** against running everything on your heaviest model
+- **Shows what routing saved**, measured against the dearest model the session actually used — and shows nothing until a session has genuinely spanned two models
 - Uses your own pricing table, refreshable with one command — no network calls from the hook or statusline
 - Can be switched off globally or overridden per project, without uninstalling
 - Preserves an existing custom statusline if you already have one
@@ -528,7 +528,7 @@ Two things to watch:
 Statusline with pricing configured (appended to your existing statusline if you had one):
 
 ```text
-Sonnet 5 | my-repo (main) | turn $0.0042 | session $4.23 | saved $8.13 (66%) | 3.3M in / 33.0k out | 3 tiers
+Sonnet 5 | my-repo (main) | turn $0.0042 | session $4.23 | saved $8.13 (66% vs fable-5) | 3.3M in / 33.0k out | 3 tiers
 ```
 
 ### What each segment means
@@ -537,14 +537,26 @@ Sonnet 5 | my-repo (main) | turn $0.0042 | session $4.23 | saved $8.13 (66%) | 3
 |---|---|---|
 | `turn` | Cost of the current turn | never |
 | `session` | Cost of the whole session | never |
-| `saved` | What routing avoided versus running everything on your `complex` model | nothing was saved |
+| `saved` | What routing avoided versus the dearest model this session actually used | nothing was routed |
 | `tokens` | Total tokens in / out | never |
 | `routing` | `routing off`, or `3 tiers` when a middle tier is active | plain two-tier routing |
 | `models` | Your model ladder, e.g. `haiku > sonnet > fable` | not in the default set |
 
-`saved` is a **counterfactual, not a bill**: it re-prices every token in the transcript at your
-`complex` model's rates and subtracts what you actually spent. It stays silent when the answer is
-zero — including when routing is off — rather than displaying a reassuring `$0.00`.
+`saved` is a **counterfactual, not a bill**: it re-prices every token in the transcript at the rates
+of the most expensive model the session actually ran on, and subtracts what you really spent. The
+model it compares against is named in the output, so the percentage always has a stated denominator.
+
+It stays silent until a session has genuinely spanned two or more priced models. One model means
+nothing was ever delegated, so nothing was saved — and a baseline taken from your *configured*
+`complex` model rather than from what actually ran will happily report a large saving for a session
+where the router never fired. (A session on `claude-opus-5` with `complex: fable` reported a
+constant `saved 50%` for exactly this reason: fable is precisely twice opus on every rate, so the
+figure came from the rate table, not from routing. See
+[ADR-0009](docs/adr/0009-savings-measured-from-observed-models.md).)
+
+This under-reports rather than over-reports: an all-cheap session shows no saving even though the
+heavy model would genuinely have cost more. For a number the tool computes about its own value,
+that is the right direction to be wrong in.
 
 Choose your own line with `statusline.segments`, in the order you want them:
 
@@ -557,9 +569,9 @@ Choose your own line with `statusline.segments`, in the order you want them:
 }
 ```
 
-The baseline model is resolved from `models.complex` — an alias like `fable` matches
-`claude-fable-5` in your pricing table, preferring the base id over a dated variant. Set
-`savings_baseline` to a pricing key to override it. Unknown segment names are ignored with a
+`savings_baseline` pins the comparison to a specific pricing key instead of letting it float to
+whatever the session's dearest model turned out to be. It does not bypass the two-model rule — a
+session that never left one model still reports no saving. Unknown segment names are ignored with a
 warning rather than breaking the line.
 
 Statusline before pricing is configured:
