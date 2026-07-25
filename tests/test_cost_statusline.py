@@ -611,3 +611,116 @@ class TestBillableTokens:
     @pytest.mark.parametrize("usage", [{}, {"input_tokens": None}, {"output_tokens": "many"}])
     def test_treats_unusable_values_as_nothing(self, usage):
         assert statusline.billable_tokens(usage) == 0
+
+
+class TestSubagentTranscripts:
+    """Claude Code writes each spawned agent to <project>/<session-id>/**/*.jsonl, outside the
+    session file. Reading only the session file misses everything every agent did."""
+
+    USAGE = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+
+    def _session(self, tmp_path, main_lines, agents=None):
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text("\n".join(main_lines) + "\n")
+        for name, lines in (agents or {}).items():
+            path = tmp_path / "session" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(lines) + "\n")
+        return transcript
+
+    def _line(self, kind, msg_id=None, model="claude-sonnet-5", usage=None, timestamp=None):
+        if kind == "user":
+            body = {"type": "user", "message": {}}
+        else:
+            body = {"type": "assistant", "message": {"id": msg_id, "model": model, "usage": usage}}
+        if timestamp:
+            body["timestamp"] = timestamp
+        return json.dumps(body)
+
+    def test_no_agent_directory_means_no_extra_entries(self, tmp_path):
+        transcript = self._session(tmp_path, [self._line("user"), self._line("a", "m1", usage=self.USAGE)])
+        entries, _ = statusline.collect_entries(transcript)
+        assert len(entries) == 1
+
+    def test_finds_agents_under_the_session_directory(self, tmp_path):
+        transcript = self._session(
+            tmp_path,
+            [self._line("user"), self._line("a", "m1", usage=self.USAGE)],
+            {"subagents/agent-x.jsonl": [self._line("a", "m2", "claude-fable-5", self.USAGE)]},
+        )
+        entries, _ = statusline.collect_entries(transcript)
+        assert sorted(entry["model"] for entry in entries) == ["claude-fable-5", "claude-sonnet-5"]
+
+    def test_finds_workflow_agents_nested_deeper(self, tmp_path):
+        transcript = self._session(
+            tmp_path, [self._line("user")],
+            {"wf_abc123/agent-y.jsonl": [self._line("a", "m3", "claude-fable-5", self.USAGE)]},
+        )
+        assert len(statusline.collect_entries(transcript)[0]) == 1
+
+    def test_agent_cost_reaches_the_session_total(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user"), self._line("a", "m1", "claude-sonnet-5", self.USAGE)],
+            {"subagents/agent-x.jsonl": [self._line("a", "m2", "claude-fable-5", self.USAGE)]},
+        )
+        line = statusline.run(stdin_payload(transcript))
+        # $12 on sonnet-5 in the session + $60 on fable-5 in the agent.
+        assert "session $72.00" in line
+
+    def test_a_delegating_session_can_finally_show_savings(self, tmp_path, home):
+        # Savings need two priced models; before agent transcripts were read, the delegated
+        # model lived in a file the statusline never opened, so this could not happen.
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user"), self._line("a", "m1", "claude-sonnet-5", self.USAGE)],
+            {"subagents/agent-x.jsonl": [self._line("a", "m2", "claude-fable-5", self.USAGE)]},
+        )
+        assert "saved $48.00 (40% vs fable-5)" in statusline.run(stdin_payload(transcript))
+
+    def test_agent_work_after_the_last_prompt_counts_towards_the_turn(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user", timestamp="2026-07-25T10:00:00Z")],
+            {"subagents/agent-x.jsonl": [
+                self._line("a", "m2", "claude-sonnet-5", self.USAGE, timestamp="2026-07-25T10:05:00Z")]},
+        )
+        assert "turn $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_agent_work_from_an_earlier_turn_is_session_only(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user", timestamp="2026-07-25T10:00:00Z")],
+            {"subagents/agent-x.jsonl": [
+                self._line("a", "m2", "claude-sonnet-5", self.USAGE, timestamp="2026-07-25T09:00:00Z")]},
+        )
+        line = statusline.run(stdin_payload(transcript))
+        assert "turn $0.0000" in line and "session $12.00" in line
+
+    def test_without_timestamps_agent_work_never_inflates_the_turn(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path, [self._line("user")],
+            {"subagents/agent-x.jsonl": [self._line("a", "m2", "claude-sonnet-5", self.USAGE)]},
+        )
+        line = statusline.run(stdin_payload(transcript))
+        assert "turn $0.0000" in line and "session $12.00" in line
+
+    def test_an_unreadable_agent_transcript_does_not_break_the_line(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user"), self._line("a", "m1", "claude-sonnet-5", self.USAGE)],
+            {"subagents/agent-x.jsonl": ["{not json", "", "null"]},
+        )
+        assert "session $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_a_session_directory_that_is_a_file_is_ignored(self, tmp_path):
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(self._line("user") + "\n")
+        (tmp_path / "session").write_text("not a directory")
+        assert statusline.subagent_transcripts(transcript) == []

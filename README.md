@@ -110,7 +110,7 @@ are withheld because they derive from whatever the operator happened to be worki
 - Names each subagent for its configured model, e.g. `heavy-task-fable`, so the model is visible in the task line
 - **Learns from your own history** which prompts actually become work, and reports the accuracy change before you apply it
 - **Explains any routing decision** without spending a token
-- Tracks turn and session cost from the local transcript, including subagent sidechain usage — priced by cache TTL, so 1-hour cache writes are not billed at the 5-minute rate
+- Tracks turn and session cost from the local transcript **and every subagent this session spawned** — priced by cache TTL, so 1-hour cache writes are not billed at the 5-minute rate
 - **Shows what routing saved**, measured against the dearest model the session actually used — and shows nothing until a session has genuinely spanned two models
 - Uses your own pricing table, refreshable with one command — no network calls from the hook or statusline
 - Can be switched off globally or overridden per project, without uninstalling
@@ -687,7 +687,7 @@ Full scenario tables and findings: [docs/lifecycle-test-report.md](docs/lifecycl
 
 ## How cost is calculated
 
-`statusline/cost_statusline.py` stream-parses the session transcript (`.jsonl`), dedupes streamed assistant messages by message ID, and sums input, output, cache-creation, and cache-read tokens per model — including subagent (sidechain) usage. Cost = tokens × your configured $/MTok rates, computed entirely offline. It is an estimate derived from transcript usage, not your official Anthropic bill.
+`statusline/cost_statusline.py` stream-parses the session transcript (`.jsonl`), dedupes streamed assistant messages by message ID, and sums input, output, cache-creation, and cache-read tokens per model. Claude Code writes each spawned agent to its own file under `<project>/<session-id>/`, so those are read too and attributed to the turn by timestamp — without them, agent-heavy sessions under-report badly. Cost = tokens × your configured $/MTok rates, computed entirely offline. It is an estimate derived from transcript usage, not your official Anthropic bill.
 
 Cache writes are split by TTL: the transcript reports `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens` separately, and each bucket is priced at its own rate. Where that per-TTL breakdown is present it is treated as authoritative — a few entries carry a flat `cache_creation_input_tokens` total that disagrees with the breakdown beside it, and mixing the two would double-count. Entries reporting `usage.speed == "fast"` are priced from the model's `fast` rate block when one is configured.
 
