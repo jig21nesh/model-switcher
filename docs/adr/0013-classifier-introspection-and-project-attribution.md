@@ -1,4 +1,4 @@
-# ADR-0010: Make the learned classifier legible, and attribute its vocabulary to projects
+# ADR-0013: Make the learned classifier legible, and attribute its vocabulary to projects
 
 Status: accepted (2026-07-25)
 
