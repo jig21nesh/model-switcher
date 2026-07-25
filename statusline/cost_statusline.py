@@ -22,6 +22,12 @@ FAST_KEY = "fast"
 # A rate above this is a typo or a poisoned config, not a price.
 MAX_RATE_USD_PER_MTOK = 10_000.0
 
+# Segments are rendered in this order. "saved" and "routing" stay silent when they have nothing
+# worth saying, so the default line stays short until something is actually notable.
+DEFAULT_SEGMENTS = ("turn", "session", "saved", "tokens", "routing")
+# Below half a cent, a savings figure is noise.
+SAVINGS_MIN_USD = 0.005
+
 
 def home_dir() -> Path:
     return Path(os.environ.get("MODEL_SWITCHER_HOME", str(Path.home() / ".claude" / "model-switcher")))
@@ -163,6 +169,141 @@ def format_tokens(count: int) -> str:
     return str(count)
 
 
+def baseline_model(config: dict, pricing: dict[str, dict]) -> str | None:
+    """The pricing entry representing 'if all of this had run on the expensive model'.
+
+    config names a model by alias ("fable"); the pricing table is keyed by id
+    ("claude-fable-5"), so the two have to be reconciled.
+    """
+    statusline = config.get("statusline")
+    if isinstance(statusline, dict):
+        explicit = statusline.get("savings_baseline")
+        if isinstance(explicit, str) and explicit in pricing:
+            return explicit
+
+    models = config.get("models")
+    alias = models.get("complex") if isinstance(models, dict) else None
+    if not isinstance(alias, str) or not alias.strip():
+        return None
+    if alias in pricing:
+        return alias
+    matches = [key for key in pricing if alias.lower() in key.lower()]
+    if not matches:
+        return None
+    # Prefer the shortest matching key: base ids ("claude-sonnet-5") are shorter than older or
+    # dated variants ("claude-sonnet-4-6"), so this lands on what the alias most likely meant.
+    # Where that is also the cheaper entry it understates savings, which is the safer direction
+    # to be wrong in. Sorting first keeps the choice stable whatever order the config was in.
+    return min(sorted(matches), key=lambda key: (len(key), -pricing[key]["output"]))
+
+
+def summarise(entries: list[dict], pricing: dict[str, dict], config: dict, last_user_line: int) -> dict:
+    baseline_rates = None
+    key = baseline_model(config, pricing)
+    if key is not None:
+        baseline_rates = pricing[key]
+
+    totals = {
+        "turn": 0.0, "session": 0.0, "baseline": 0.0,
+        "tokens_in": 0, "tokens_out": 0, "unknown": set(), "baseline_model": key,
+    }
+    for entry in entries:
+        usage = entry["usage"]
+        totals["tokens_in"] += (
+            _tokens(usage, "input_tokens")
+            + _tokens(usage, "cache_creation_input_tokens")
+            + _tokens(usage, "cache_read_input_tokens")
+        )
+        totals["tokens_out"] += _tokens(usage, "output_tokens")
+        rates = match_pricing(entry["model"], pricing)
+        if rates is None:
+            totals["unknown"].add(entry["model"] or "unknown")
+            continue
+        cost = usage_cost(usage, effective_rates(usage, rates))
+        totals["session"] += cost
+        if entry["line"] > last_user_line:
+            totals["turn"] += cost
+        if baseline_rates is not None:
+            totals["baseline"] += usage_cost(usage, effective_rates(usage, baseline_rates))
+    return totals
+
+
+def _routing_state(config: dict) -> tuple[bool, int]:
+    """Read the two routing facts worth surfacing without depending on the hook."""
+    routing = config.get("routing")
+    enabled = routing.get("enabled", True) if isinstance(routing, dict) else True
+    models = config.get("models")
+    standard = models.get("standard") if isinstance(models, dict) else None
+    tiers = 3 if isinstance(standard, str) and standard.strip() else 2
+    requested = routing.get("tiers") if isinstance(routing, dict) else None
+    if requested in (2, 3) and not isinstance(requested, bool):
+        tiers = min(requested, tiers)
+    return (enabled if isinstance(enabled, bool) else True), tiers
+
+
+def _segment_turn(totals: dict, _config: dict) -> str:
+    return f"turn {format_cost(totals['turn'])}"
+
+
+def _segment_session(totals: dict, _config: dict) -> str:
+    return f"session {format_cost(totals['session'])}"
+
+
+def _segment_tokens(totals: dict, _config: dict) -> str:
+    return f"{format_tokens(totals['tokens_in'])} in / {format_tokens(totals['tokens_out'])} out"
+
+
+def _segment_saved(totals: dict, _config: dict) -> str | None:
+    # A counterfactual, not a bill: what the same tokens would have cost entirely on the heavy
+    # model. Silent when nothing was saved, which is the honest answer when routing is off.
+    saved = totals["baseline"] - totals["session"]
+    if totals["baseline"] <= 0 or saved <= SAVINGS_MIN_USD:
+        return None
+    return f"saved {format_cost(saved)} ({saved / totals['baseline'] * 100:.0f}%)"
+
+
+def _segment_routing(_totals: dict, config: dict) -> str | None:
+    enabled, tiers = _routing_state(config)
+    if not enabled:
+        return "routing off"
+    # Two tiers is the default; saying so on every line would be noise.
+    return "3 tiers" if tiers == 3 else None
+
+
+def _segment_models(_totals: dict, config: dict) -> str | None:
+    models = config.get("models")
+    if not isinstance(models, dict):
+        return None
+    names = [str(models[key]) for key in ("simple", "standard", "complex") if isinstance(models.get(key), str)]
+    return " > ".join(names) if names else None
+
+
+SEGMENT_BUILDERS = {
+    "turn": _segment_turn,
+    "session": _segment_session,
+    "saved": _segment_saved,
+    "tokens": _segment_tokens,
+    "routing": _segment_routing,
+    "models": _segment_models,
+}
+
+
+def configured_segments(config: dict) -> tuple[str, ...]:
+    statusline = config.get("statusline")
+    requested = statusline.get("segments") if isinstance(statusline, dict) else None
+    if not isinstance(requested, list) or not requested:
+        return DEFAULT_SEGMENTS
+    # Names arrive from a user-edited config, so they may not even be hashable.
+    def known(name: object) -> bool:
+        return isinstance(name, str) and name in SEGMENT_BUILDERS
+
+    chosen = tuple(name for name in requested if known(name))
+    unknown = [name for name in requested if not known(name)]
+    if unknown:
+        logger.warning("unknown statusline segment(s): %s", ", ".join(str(name) for name in unknown[:5]))
+    return chosen or DEFAULT_SEGMENTS
+
+
 def cost_segment(data: dict, config: dict) -> str:
     pricing = usable_pricing(config)
     if not pricing:
@@ -183,33 +324,15 @@ def cost_segment(data: dict, config: dict) -> str:
             return f"session ~{format_cost(float(builtin))} (builtin est.)"
         return "cost n/a: no usage data"
 
-    session_cost = turn_cost = 0.0
-    tokens_in = tokens_out = 0
-    unknown_models: set[str] = set()
-    for entry in entries:
-        usage = entry["usage"]
-        tokens_in += (
-            _tokens(usage, "input_tokens")
-            + _tokens(usage, "cache_creation_input_tokens")
-            + _tokens(usage, "cache_read_input_tokens")
-        )
-        tokens_out += _tokens(usage, "output_tokens")
-        rates = match_pricing(entry["model"], pricing)
-        if rates is None:
-            unknown_models.add(entry["model"] or "unknown")
-            continue
-        cost = usage_cost(usage, effective_rates(usage, rates))
-        session_cost += cost
-        if entry["line"] > last_user_line:
-            turn_cost += cost
-
-    segment = (
-        f"turn {format_cost(turn_cost)} | session {format_cost(session_cost)} "
-        f"({format_tokens(tokens_in)} in / {format_tokens(tokens_out)} out)"
-    )
-    if unknown_models:
-        segment += f" | no rate: {', '.join(sorted(unknown_models))}"
-    return segment
+    totals = summarise(entries, pricing, config, last_user_line)
+    parts = []
+    for name in configured_segments(config):
+        rendered = SEGMENT_BUILDERS[name](totals, config)
+        if rendered:
+            parts.append(rendered)
+    if totals["unknown"]:
+        parts.append(f"no rate: {', '.join(sorted(totals['unknown']))}")
+    return " | ".join(parts) if parts else "cost n/a: no usage data"
 
 
 def wrapped_line(config: dict, raw_stdin: str) -> str | None:

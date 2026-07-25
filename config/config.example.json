@@ -13,7 +13,9 @@
     "standard_threshold": 3
   },
   "statusline": {
-    "wrap_command": null
+    "wrap_command": null,
+    "segments": ["turn", "session", "saved", "tokens", "routing"],
+    "savings_baseline": null
   },
   "pricing_usd_per_mtok": {
     "claude-fable-5": { "input": 10.00, "output": 50.00, "cache_write": 12.50, "cache_write_1h": 20.00, "cache_read": 1.00 },
