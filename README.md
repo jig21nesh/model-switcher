@@ -218,13 +218,16 @@ flowchart TD
 
     C[("config.json<br/>models · threshold · pricing")] -.-> H
 
-    H -->|"score < threshold"| S["Answered in-session<br/>simple model"]
+    H -->|"score < standard_threshold"| S["Answered in-session<br/>simple model"]
+    H -->|"standard_threshold <= score < threshold<br/>(3-tier only)"| M["additionalContext:<br/>delegate to mid-task"]
     H -->|"score >= threshold"| D["additionalContext:<br/>delegate to heavy-task"]
     H -->|"models not configured"| Q["Claude asks you to confirm<br/>models and saves config.json"]
     H -->|"routing disabled<br/>(global or project override)"| S
 
+    M --> B["mid-task-* subagent<br/>configured standard model"]
     D --> A["heavy-task-* subagent<br/>configured heavy model"]
     A --> R[Result relayed to user]
+    B --> R
 
     S --> T[Assistant message]
     R --> T
@@ -269,6 +272,7 @@ sequenceDiagram
 | `~/.claude/model-switcher/config.json` | Your configuration — created from `config/config.example.json` if absent, never overwritten |
 | `~/.claude/model-switcher/installed.json` | Manifest of your pre-install `model`/`statusLine`/agent, used by uninstall |
 | `~/.claude/agents/heavy-task-<model>.md` | The subagent, named for and stamped with your configured complex model, e.g. `heavy-task-fable` |
+| `~/.claude/agents/mid-task-<model>.md` | The middle-tier subagent — only when `models.standard` is set, e.g. `mid-task-sonnet` |
 | `~/.claude/settings.json` | Hook and statusline entries merged in; session model set to your simple model unless `--skip-model` is used |
 | `~/.claude/CLAUDE.md` | Marker-delimited routing-policy block (`<!-- model-switcher:begin/end -->`) |
 
@@ -300,7 +304,8 @@ All configuration lives in `~/.claude/model-switcher/config.json`.
 {
   "models": {
     "complex": "fable",
-    "simple": "sonnet"
+    "simple": "sonnet",
+    "standard": null
   }
 }
 ```
@@ -308,7 +313,36 @@ All configuration lives in `~/.claude/model-switcher/config.json`.
 - Aliases (`opus`, `sonnet`, `haiku`, `fable`) or full model IDs (`claude-opus-4-8`) are accepted.
 - `complex` is the model the `heavy-task-*` agent runs on. **After changing it, re-run `./install.sh`** so the agent file is regenerated (and renamed for the new model).
 - `simple` is the session model the installer writes into `settings.json`.
-- If either is missing or `null`, Claude asks you to confirm models at the start of your next prompt and saves your answer here.
+- `standard` is optional and enables a **third tier** — see below. Leave it `null` for the two-tier default.
+- If `complex` or `simple` is missing or `null`, Claude asks you to confirm models at the start of your next prompt and saves your answer here.
+
+### 1a. Optional: add a middle tier
+
+With two tiers, everything above the threshold pays top-model rates — including work that is more
+than the cheap model handles well but nowhere near worth Fable. Setting `models.standard` adds a
+middle band:
+
+```json
+{
+  "models": { "complex": "fable", "standard": "sonnet", "simple": "haiku" },
+  "complexity": { "threshold": 5, "standard_threshold": 3 }
+}
+```
+
+| Score | Routes to |
+|---|---|
+| `>= threshold` (5) | `heavy-task-fable` |
+| `>= standard_threshold` (3), below 5 | `mid-task-sonnet` |
+| below 3 | answered in-session on `simple` |
+
+**Re-run `./install.sh` after adding it** — that generates the second agent. Removing
+`models.standard` and re-running deletes it again.
+
+`routing.tiers` controls this explicitly: `"auto"` (the default — three tiers when `models.standard`
+is valid, two otherwise), or a literal `2`/`3`. A project can drop to two tiers with
+`{"routing": {"tiers": 2}}` in `.claude/model-switcher.json` without touching the global config.
+`standard_threshold` is always forced strictly below `threshold`; an overlapping pair is clamped
+with a warning rather than silently making the middle band unreachable.
 
 ### 2. Configure pricing
 

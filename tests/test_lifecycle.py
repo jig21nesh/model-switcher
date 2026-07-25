@@ -133,3 +133,38 @@ def test_uninstall_without_install_is_safe(claude_dir):
     assert not (claude_dir / "settings.json").exists() or json.loads(
         (claude_dir / "settings.json").read_text(encoding="utf-8")
     ) == {}
+
+
+def test_install_generates_both_agents_when_a_middle_tier_is_configured(claude_dir):
+    install_dir = claude_dir / "model-switcher"
+    install_dir.mkdir(parents=True)
+    (install_dir / "config.json").write_text(
+        json.dumps({"models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"}}),
+        encoding="utf-8",
+    )
+
+    output = run_installer(claude_dir, "--skip-model").stdout
+    assert "3 tiers" in output
+    assert (claude_dir / "agents" / "heavy-task-fable.md").exists()
+    assert (claude_dir / "agents" / "mid-task-sonnet.md").exists()
+
+    run_installer(claude_dir, "--uninstall")
+    assert not list((claude_dir / "agents").glob("*.md"))
+
+
+def test_removing_the_middle_model_drops_its_agent_on_reinstall(claude_dir):
+    install_dir = claude_dir / "model-switcher"
+    install_dir.mkdir(parents=True)
+    config = install_dir / "config.json"
+    config.write_text(
+        json.dumps({"models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"}}),
+        encoding="utf-8",
+    )
+    run_installer(claude_dir, "--skip-model")
+    assert (claude_dir / "agents" / "mid-task-sonnet.md").exists()
+
+    config.write_text(json.dumps({"models": {"complex": "fable", "simple": "haiku"}}), encoding="utf-8")
+    output = run_installer(claude_dir, "--skip-model").stdout
+    assert "2 tiers" in output
+    assert not (claude_dir / "agents" / "mid-task-sonnet.md").exists()
+    assert (claude_dir / "agents" / "heavy-task-fable.md").exists()

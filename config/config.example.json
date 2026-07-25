@@ -1,13 +1,16 @@
 {
   "models": {
     "complex": "fable",
-    "simple": "sonnet"
+    "simple": "sonnet",
+    "standard": null
   },
   "routing": {
-    "enabled": true
+    "enabled": true,
+    "tiers": "auto"
   },
   "complexity": {
-    "threshold": 5
+    "threshold": 5,
+    "standard_threshold": 3
   },
   "statusline": {
     "wrap_command": null
