@@ -13,6 +13,10 @@ def hook_command(install_dir: Path) -> str:
     return f'python3 "{install_dir / "complexity_router.py"}"'
 
 
+def agent_hook_command(install_dir: Path) -> str:
+    return f'python3 "{install_dir / "agent_router.py"}"'
+
+
 def statusline_command(install_dir: Path) -> str:
     return f'python3 "{install_dir / "cost_statusline.py"}"'
 
@@ -21,18 +25,41 @@ def _is_ours(command: str | None) -> bool:
     return isinstance(command, str) and MARKER in command
 
 
-def _has_our_hook(settings: dict) -> bool:
-    for matcher in settings.get("hooks", {}).get("UserPromptSubmit", []):
+def _has_our_hook(settings: dict, event: str = "UserPromptSubmit") -> bool:
+    for matcher in settings.get("hooks", {}).get(event, []):
+        if not isinstance(matcher, dict):
+            continue
         for hook in matcher.get("hooks", []):
-            if _is_ours(hook.get("command")):
+            if isinstance(hook, dict) and _is_ours(hook.get("command")):
                 return True
     return False
+
+
+def _drop_our_hooks(settings: dict, event: str) -> None:
+    matchers = settings.get("hooks", {}).get(event)
+    if not isinstance(matchers, list):
+        return
+    kept = [
+        m for m in matchers
+        if not (isinstance(m, dict) and any(
+            isinstance(h, dict) and _is_ours(h.get("command")) for h in m.get("hooks", [])
+        ))
+    ]
+    if kept:
+        settings["hooks"][event] = kept
+    else:
+        settings["hooks"].pop(event, None)
 
 
 def install(settings: dict, manifest: dict, config: dict, install_dir: Path, set_model: str | None) -> None:
     if not _has_our_hook(settings):
         settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
             {"hooks": [{"type": "command", "command": hook_command(install_dir)}]}
+        )
+    # Matched on the Task tool so it runs only when Claude actually spawns an agent.
+    if not _has_our_hook(settings, "PreToolUse"):
+        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
+            {"matcher": "Task", "hooks": [{"type": "command", "command": agent_hook_command(install_dir)}]}
         )
 
     current_statusline = settings.get("statusLine")
@@ -51,15 +78,10 @@ def install(settings: dict, manifest: dict, config: dict, install_dir: Path, set
 
 
 def uninstall(settings: dict, manifest: dict) -> None:
-    matchers = settings.get("hooks", {}).get("UserPromptSubmit")
-    if isinstance(matchers, list):
-        kept = [m for m in matchers if not any(_is_ours(h.get("command")) for h in m.get("hooks", []))]
-        if kept:
-            settings["hooks"]["UserPromptSubmit"] = kept
-        else:
-            settings["hooks"].pop("UserPromptSubmit", None)
-            if not settings["hooks"]:
-                settings.pop("hooks")
+    _drop_our_hooks(settings, "UserPromptSubmit")
+    _drop_our_hooks(settings, "PreToolUse")
+    if isinstance(settings.get("hooks"), dict) and not settings["hooks"]:
+        settings.pop("hooks")
 
     current_statusline = settings.get("statusLine")
     if isinstance(current_statusline, dict) and _is_ours(current_statusline.get("command")):

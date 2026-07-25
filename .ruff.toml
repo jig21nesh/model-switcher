@@ -12,6 +12,7 @@ select = ["E", "F", "I", "N", "W"]
 # imported by bare name. Without this they would be sorted as third-party.
 known-first-party = [
     "analyze_history",
+    "agent_router",
     "cli",
     "complexity_router",
     "cost_statusline",

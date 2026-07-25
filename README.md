@@ -106,6 +106,7 @@ are withheld because they derive from whatever the operator happened to be worki
 - Scores each prompt locally before Claude sees it
 - Keeps simple prompts on your configured session model
 - Delegates complex prompts to a `heavy-task-*` subagent
+- **Applies the same policy when Claude spawns its own agents** — a `general-purpose` agent handed complex work is rewritten onto the configured tier, so delegated work does not quietly escape the ladder
 - Optionally adds a **third tier** — a `mid-task-*` agent for work that is more than the cheap model but less than the dearest one
 - Names each subagent for its configured model, e.g. `heavy-task-fable`, so the model is visible in the task line
 - **Learns from your own history** which prompts actually become work, and reports the accuracy change before you apply it
@@ -451,6 +452,39 @@ Whatever you set, `model-switcher tiers` prints the ladder your config actually 
 The installer prints the same ladder when it finishes, and `explain` prints it with `->` against
 the band your prompt landed in. All three come from one function, so what you are shown is what
 the router will do.
+
+### 1b. Routing Claude's own agents
+
+Your prompt is not the only thing that gets delegated. When Claude spawns a `general-purpose`
+agent, that agent has no model of its own — it inherits your session model — so the work runs
+outside the ladder entirely. In one measured corpus, agent transcripts held **44.5% of all input
+tokens and 73% of all output tokens**, and `Task` was called with `general-purpose` 72 times
+against a configured tier agent once.
+
+A `PreToolUse` hook on `Task` closes that gap: it scores the delegated prompt with the same scorer
+and moves generic agents onto the tier the policy says the work belongs to.
+
+```text
+Claude spawns:  general-purpose  "refactor the auth module and migrate the schema"
+model-switcher: score 8/10 -> COMPLEX -> runs as heavy-task-fable instead
+```
+
+Deliberately narrow, because rewriting a tool call is intrusive:
+
+| Rule | Why |
+|---|---|
+| **Upgrade only, never downgrade** | A caller that named a specific agent knows something the score does not |
+| Only `general-purpose` and `claude` are eligible | They have no model of their own. Set `routing.generic_agents` to change the list |
+| `Explore` is never promoted | It is a cheap read-only search agent; the heavy tier would spend a lot to do little |
+| Top-level spawns only | Inside an agent, promoting would let a tier agent escalate its own helpers |
+| Never rewrites to a missing agent | That would turn a working call into a failing one |
+| Never silent | Every rewrite explains the score, the tier and how to switch it off |
+
+Disable with `{"routing": {"agents": false}}`; it is also off whenever `routing.enabled` is false.
+
+> **Note:** a rewrite sends work to `models.complex`. If that model has no available quota the
+> delegation fails, and that is not detectable offline — the agent file exists and the config is
+> valid. `model-switcher status` reports failed delegations with their reason.
 
 ### 1a. Optional: add a middle tier
 
