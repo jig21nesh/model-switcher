@@ -94,7 +94,7 @@ cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/statusline/cost_statusline.
 # clone is deleted. Copied flat; bin/model-switcher handles both layouts.
 cp "$REPO_DIR/scripts/cli.py" "$REPO_DIR/scripts/analyze_history.py" \
   "$REPO_DIR/scripts/update_pricing.py" "$REPO_DIR/scripts/generate_agent.py" \
-  "$REPO_DIR/scripts/uninstall.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
+  "$REPO_DIR/scripts/uninstall.py" "$REPO_DIR/scripts/status_report.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
 cp "$REPO_DIR/bin/model-switcher" "$INSTALL_DIR/model-switcher"
 chmod +x "$INSTALL_DIR/model-switcher"
 [ -f "$CONFIG" ] || cp "$REPO_DIR/config/config.example.json" "$CONFIG"

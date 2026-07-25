@@ -797,3 +797,178 @@ def _in_band(score, rung, config):
     if rung["tier"] == "standard":
         return score >= router.standard_threshold_from(config)
     return True
+
+
+PRICED = {
+    "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_write": 2.5, "cache_read": 0.2},
+    "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_write": 12.5, "cache_read": 1.0},
+    "claude-opus-5": {"input": 5.0, "output": 25.0, "cache_write": 6.25, "cache_read": 0.5},
+}
+
+
+class TestResolveAlias:
+    @pytest.mark.parametrize("alias,expected", [
+        ("fable", "claude-fable-5"),
+        ("claude-opus-5", "claude-opus-5"),
+        ("opus[1m]", "claude-opus-5"),
+        ("OPUS", "claude-opus-5"),
+    ])
+    def test_resolves_what_a_user_would_type(self, alias, expected):
+        assert router.resolve_alias(alias, PRICED) == expected
+
+    @pytest.mark.parametrize("alias", ["", "   ", None, 5, "gpt-4", "[1m]", {}])
+    def test_returns_nothing_for_anything_it_cannot_place(self, alias):
+        assert router.resolve_alias(alias, PRICED) is None
+
+    def test_survives_a_pricing_table_that_is_not_a_dict(self):
+        assert router.resolve_alias("fable", "nope") is None
+
+
+class TestHealthWarnings:
+    HEALTHY = {"models": {"complex": "fable", "simple": "sonnet"}, "pricing_usd_per_mtok": PRICED}
+
+    def _messages(self, config, session_model=None, agents_dir=None):
+        return [message for _, message in router.health_warnings(config, session_model, agents_dir)]
+
+    def _severities(self, config, session_model=None, agents_dir=None):
+        return [severity for severity, _ in router.health_warnings(config, session_model, agents_dir)]
+
+    def test_a_sane_config_reports_nothing(self):
+        assert router.health_warnings(self.HEALTHY, "sonnet") == []
+
+    def test_a_heavy_tier_that_is_not_a_step_up_is_only_advice(self):
+        # Session already on fable; delegating to sonnet routes work *down*.
+        config = {"models": {"complex": "sonnet", "simple": "fable"}, "pricing_usd_per_mtok": PRICED}
+        assert self._severities(config, "fable") == [router.ADVICE]
+
+    def test_a_heavier_complex_tier_is_the_intended_shape_and_is_not_flagged(self):
+        config = {"models": {"complex": "fable", "simple": "sonnet"}, "pricing_usd_per_mtok": PRICED}
+        assert router.health_warnings(config, "sonnet") == []
+
+    def test_the_step_up_check_names_both_rates(self):
+        config = {"models": {"complex": "opus", "simple": "fable"}, "pricing_usd_per_mtok": PRICED}
+        message = self._messages(config, "fable")[0]
+        assert "$25" in message and "$50" in message
+
+    def test_a_session_off_the_cheap_tier_is_advice(self):
+        messages = self._messages(self.HEALTHY, "opus[1m]")
+        assert any("not actually in use" in message for message in messages)
+
+    def test_a_configured_model_with_no_rate_is_advice(self):
+        config = {"models": {"complex": "mystery-9", "simple": "sonnet"}, "pricing_usd_per_mtok": PRICED}
+        assert self._severities(config, "sonnet") == [router.ADVICE]
+
+    def test_a_missing_agent_file_is_broken(self, tmp_path):
+        (tmp_path / "agents").mkdir()
+        assert router.BROKEN in self._severities(self.HEALTHY, "sonnet", tmp_path / "agents")
+
+    def test_a_present_agent_file_is_fine(self, tmp_path):
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "heavy-task-fable.md").write_text("agent")
+        assert router.health_warnings(self.HEALTHY, "sonnet", agents) == []
+
+    def test_an_absent_agents_directory_is_not_a_finding(self, tmp_path):
+        # A sandbox or a pre-install checkout, not an agent that went missing.
+        assert router.health_warnings(self.HEALTHY, "sonnet", tmp_path / "nope") == []
+
+    def test_the_middle_agent_is_only_expected_when_three_tiers_are_live(self, tmp_path):
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "heavy-task-fable.md").write_text("agent")
+        two_tier = {**self.HEALTHY, "models": {"complex": "fable", "simple": "sonnet"}}
+        assert router.health_warnings(two_tier, "sonnet", agents) == []
+        three_tier = {**self.HEALTHY, "models": {"complex": "fable", "standard": "opus", "simple": "sonnet"}}
+        assert router.BROKEN in self._severities(three_tier, "sonnet", agents)
+
+    def test_an_unreachable_middle_band_is_broken(self):
+        config = {"models": {"complex": "fable", "standard": "opus", "simple": "sonnet"},
+                  "pricing_usd_per_mtok": PRICED,
+                  "complexity": {"threshold": 5, "standard_threshold": 9}}
+        assert router.BROKEN in self._severities(config, "sonnet")
+
+    @pytest.mark.parametrize("config", [
+        {}, {"models": None}, {"models": {}}, {"pricing_usd_per_mtok": "nope"},
+        {"models": {"complex": 5, "simple": []}}, {"complexity": "nope"},
+    ])
+    def test_never_raises_on_a_malformed_config(self, config):
+        assert isinstance(router.health_warnings(config, "sonnet"), list)
+
+
+@pytest.fixture
+def install(tmp_path, monkeypatch):
+    """A tree shaped like a real install: claude_dir() stays inside this test's own tmp_path.
+
+    The `home` fixture points MODEL_SWITCHER_HOME straight at tmp_path, which makes
+    home_dir().parent the pytest run directory that every test shares — writing an agents/
+    directory there leaks into unrelated tests.
+    """
+    claude = tmp_path / ".claude"
+    home = claude / "model-switcher"
+    home.mkdir(parents=True)
+    (claude / "agents").mkdir()
+    monkeypatch.setenv("MODEL_SWITCHER_HOME", str(home))
+    return claude, home
+
+
+class TestInSessionChecks:
+    def _config(self, home, **extra):
+        config = {"models": {"complex": "fable", "simple": "sonnet"},
+                  "pricing_usd_per_mtok": PRICED, **extra}
+        (home / "config.json").write_text(json.dumps(config))
+        return config
+
+    def test_a_broken_install_interrupts_the_session_once(self, install):
+        _, home = install
+        self._config(home)
+        first = router.run(hook_input("hello", session_id="s1"))
+        assert "misconfigured" in first and "heavy-task-fable.md" in first
+        assert "misconfigured" not in router.run(hook_input("hello again", session_id="s1"))
+
+    def test_a_new_session_is_told_again(self, install):
+        _, home = install
+        self._config(home)
+        router.run(hook_input("hello", session_id="s1"))
+        assert "misconfigured" in router.run(hook_input("hello", session_id="s2"))
+
+    def test_a_healthy_install_says_nothing(self, install):
+        claude, home = install
+        self._config(home)
+        (claude / "agents" / "heavy-task-fable.md").write_text("agent")
+        (claude / "settings.json").write_text(json.dumps({"model": "sonnet"}))
+        assert "misconfigured" not in router.run(hook_input("hello", session_id="s1"))
+
+    def test_advice_alone_never_interrupts_a_session(self, install):
+        claude, home = install
+        # Session off the cheap tier: real, worth reporting in `status`, not worth interrupting.
+        self._config(home)
+        (claude / "agents" / "heavy-task-fable.md").write_text("agent")
+        (claude / "settings.json").write_text(json.dumps({"model": "opus"}))
+        assert "misconfigured" not in router.run(hook_input("hello", session_id="s1"))
+
+    def test_it_can_be_switched_off(self, install):
+        _, home = install
+        self._config(home, checks={"in_session": False})
+        assert "misconfigured" not in router.run(hook_input("hello", session_id="s1"))
+
+    def test_a_delegation_directive_still_gets_through_alongside_it(self, install):
+        _, home = install
+        self._config(home)
+        out = router.run(hook_input("refactor the auth module and migrate the schema", session_id="s1"))
+        assert "misconfigured" in out and "MANDATORY ROUTING POLICY" in out
+
+
+class TestSessionModelFromSettings:
+    def test_reads_the_model_out_of_settings(self, install):
+        claude, _ = install
+        (claude / "settings.json").write_text(json.dumps({"model": "opus[1m]"}))
+        assert router.session_model_from_settings() == "opus[1m]"
+
+    @pytest.mark.parametrize("body", ["{bad", "[]", '{"model": 5}', '{"model": "a b c"}', "{}"])
+    def test_anything_unusable_reads_as_unknown(self, install, body):
+        claude, _ = install
+        (claude / "settings.json").write_text(body)
+        assert router.session_model_from_settings() is None
+
+    def test_a_missing_settings_file_reads_as_unknown(self, install):
+        assert router.session_model_from_settings() is None

@@ -14,6 +14,19 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def nested_home(tmp_path, monkeypatch):
+    """An install whose parent is this test's own directory, not pytest's shared run dir.
+
+    `status` looks for agents/ and settings.json beside the install, so a flat tmp_path home
+    would read and write in a directory every other test shares.
+    """
+    install = tmp_path / ".claude" / "model-switcher"
+    install.mkdir(parents=True)
+    monkeypatch.setenv("MODEL_SWITCHER_HOME", str(install))
+    return install
+
+
 def write_config(home, pricing=None):
     path = home / "config.json"
     path.write_text(json.dumps({"pricing_usd_per_mtok": pricing or {"claude-opus-5": dict(PRICING)}}))
@@ -315,3 +328,52 @@ class TestTiersCommand:
         cli.main(["explain", "what does this do?"])
         marked = [line for line in capsys.readouterr().out.splitlines() if line.startswith("  ->")]
         assert len(marked) == 1 and "answered in-session" in marked[0]
+
+
+class TestStatusCommand:
+    def _install(self, home, config, agent=None, settings=None):
+        (home / "config.json").write_text(json.dumps(config))
+        agents = home.parent / "agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        if agent:
+            (agents / agent).write_text("agent")
+        if settings is not None:
+            (home.parent / "settings.json").write_text(json.dumps({"model": settings}))
+
+    HEALTHY = {
+        "models": {"complex": "fable", "simple": "sonnet"},
+        "pricing_usd_per_mtok": {
+            "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_write": 12.5, "cache_read": 1.0},
+            "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_write": 2.5, "cache_read": 0.2},
+        },
+        "routing": {"enabled": False},
+    }
+
+    def test_reports_configuration_and_the_ladder(self, nested_home, tmp_path, capsys):
+        self._install(nested_home, self.HEALTHY, agent="heavy-task-fable.md", settings="sonnet")
+        code = cli.main(["status", "--transcripts", str(tmp_path / "none")])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "session model   sonnet" in out and "complex=fable" in out
+        assert "routing ladder" in out and "heavy-task-fable" in out
+        assert "nothing wrong found" in out
+
+    def test_exits_non_zero_when_something_is_broken(self, nested_home, tmp_path, capsys):
+        self._install(nested_home, self.HEALTHY, settings="sonnet")  # no agent file
+        code = cli.main(["status", "--transcripts", str(tmp_path / "none")])
+        assert code == 1 and "BROKEN" in capsys.readouterr().out
+
+    def test_advice_does_not_make_it_fail(self, nested_home, tmp_path, capsys):
+        self._install(nested_home, self.HEALTHY, agent="heavy-task-fable.md", settings="opus")
+        code = cli.main(["status", "--transcripts", str(tmp_path / "none")])
+        assert code == 0 and "note" in capsys.readouterr().out
+
+    def test_reports_a_missing_config_rather_than_crashing(self, nested_home, capsys):
+        assert cli.main(["status"]) == 2
+        assert "run ./install.sh first" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("body", ["{not json", '"a string"', "[1, 2]"])
+    def test_survives_an_unusable_config(self, nested_home, capsys, body):
+        (nested_home / "config.json").write_text(body)
+        assert cli.main(["status"]) == 2
+        assert capsys.readouterr().err.strip()
