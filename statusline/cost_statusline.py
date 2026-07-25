@@ -171,6 +171,17 @@ def _tokens(usage: dict, key: str) -> int:
     return value if isinstance(value, int) else 0
 
 
+def billable_tokens(usage: dict) -> int:
+    """Tokens that could carry a charge, whatever the rates happen to be."""
+    five_minute, one_hour, unsplit = cache_write_tokens(usage)
+    return (
+        _tokens(usage, "input_tokens")
+        + _tokens(usage, "output_tokens")
+        + _tokens(usage, "cache_read_input_tokens")
+        + five_minute + one_hour + unsplit
+    )
+
+
 def format_cost(cost: float) -> str:
     return f"${cost:.4f}" if cost < 1 else f"${cost:,.2f}"
 
@@ -220,7 +231,12 @@ def summarise(entries: list[dict], pricing: dict[str, dict], config: dict, last_
         totals["tokens_out"] += _tokens(usage, "output_tokens")
         resolved = resolve_pricing(entry["model"], pricing)
         if resolved is None:
-            totals["unknown"].add(entry["model"] or "unknown")
+            # An entry with no billable tokens is not a gap in the total, so a missing rate for
+            # it is not worth reporting. Claude Code writes <synthetic> placeholders shaped
+            # exactly like this — interrupts and error messages, every token field zero — and
+            # "no rate: <synthetic>" reads as missing cost data that the user cannot supply.
+            if billable_tokens(usage):
+                totals["unknown"].add(entry["model"] or "unknown")
             continue
         key, rates = resolved
         totals["models"].add(key)

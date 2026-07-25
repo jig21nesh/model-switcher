@@ -537,3 +537,77 @@ class TestDashboardLine:
             transcript_line("assistant", msg_id="a", model="claude-unknown-9", usage={"output_tokens": 5}),
         ]
         assert "no rate: claude-unknown-9" in statusline.run(stdin_payload(write_transcript(tmp_path, lines)))
+
+
+class TestUnpricedModels:
+    """A missing rate only matters when there was something to charge for."""
+
+    SYNTHETIC = {
+        "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0},
+    }
+
+    def _summarise(self, entries):
+        return statusline.summarise(entries, TIERED, {}, last_user_line=0)
+
+    def test_a_zero_token_placeholder_is_not_reported_as_unpriced(self):
+        # Claude Code logs <synthetic> for interrupts and error messages: no model, no tokens.
+        result = self._summarise([{"model": "<synthetic>", "usage": self.SYNTHETIC, "line": 1}])
+        assert result["unknown"] == set()
+
+    def test_an_unpriced_model_that_actually_billed_is_still_reported(self):
+        entries = [{"model": "claude-unknown-9", "usage": {"output_tokens": 5}, "line": 1}]
+        assert self._summarise(entries)["unknown"] == {"claude-unknown-9"}
+
+    @pytest.mark.parametrize("field", [
+        "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+    ])
+    def test_any_single_billable_field_is_enough_to_report_it(self, field):
+        entries = [{"model": "mystery", "usage": {**self.SYNTHETIC, field: 1}, "line": 1}]
+        assert self._summarise(entries)["unknown"] == {"mystery"}
+
+    def test_a_ttl_split_cache_write_counts_as_billable(self):
+        usage = {**self.SYNTHETIC, "cache_creation": {"ephemeral_1h_input_tokens": 7}}
+        assert self._summarise([{"model": "mystery", "usage": usage, "line": 1}])["unknown"] == {"mystery"}
+
+    def test_a_model_is_reported_once_it_bills_anywhere(self):
+        entries = [
+            {"model": "mystery", "usage": self.SYNTHETIC, "line": 1},
+            {"model": "mystery", "usage": {"output_tokens": 100}, "line": 2},
+        ]
+        assert self._summarise(entries)["unknown"] == {"mystery"}
+
+    def test_placeholders_do_not_suppress_a_real_warning(self):
+        entries = [
+            {"model": "<synthetic>", "usage": self.SYNTHETIC, "line": 1},
+            {"model": "claude-unknown-9", "usage": {"output_tokens": 5}, "line": 2},
+        ]
+        assert self._summarise(entries)["unknown"] == {"claude-unknown-9"}
+
+    def test_the_line_stays_clean_when_only_placeholders_are_unpriced(self, tmp_path, home):
+        write_config(home, TIERED)
+        lines = [
+            transcript_line("user"),
+            transcript_line("assistant", msg_id="a", model="claude-sonnet-5",
+                            usage={"input_tokens": 1000, "output_tokens": 100}),
+            transcript_line("assistant", msg_id="b", model="<synthetic>", usage=self.SYNTHETIC),
+        ]
+        line = statusline.run(stdin_payload(write_transcript(tmp_path, lines)))
+        assert "no rate" not in line and "session " in line
+
+
+class TestBillableTokens:
+    def test_counts_every_charging_field(self):
+        usage = {"input_tokens": 1, "output_tokens": 2, "cache_read_input_tokens": 4,
+                 "cache_creation_input_tokens": 8}
+        assert statusline.billable_tokens(usage) == 15
+
+    def test_prefers_the_ttl_breakdown_over_the_total(self):
+        usage = {"cache_creation_input_tokens": 999,
+                 "cache_creation": {"ephemeral_5m_input_tokens": 3, "ephemeral_1h_input_tokens": 4}}
+        assert statusline.billable_tokens(usage) == 7
+
+    @pytest.mark.parametrize("usage", [{}, {"input_tokens": None}, {"output_tokens": "many"}])
+    def test_treats_unusable_values_as_nothing(self, usage):
+        assert statusline.billable_tokens(usage) == 0
