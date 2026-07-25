@@ -322,7 +322,7 @@ than naming a number.
 > other; do not read any of them as a bill. The column is dropped entirely — with the reason
 > printed — when pricing is not configured, a tier has no rates, or the transcripts recorded no
 > token usage, rather than being guessed. See
-> [ADR-0010](docs/adr/0010-threshold-calibration-from-observed-outcomes.md).
+> [ADR-0012](docs/adr/0012-threshold-calibration-from-observed-outcomes.md).
 
 Nothing leaves your machine, and no prompt text is printed or written — only counts, rates and
 scores. A three-tier install is swept as in-session versus `models.complex` only, and says so.

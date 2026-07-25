@@ -1,4 +1,4 @@
-# ADR-0010: Calibrate complexity.threshold against observed outcomes
+# ADR-0012: Calibrate complexity.threshold against observed outcomes
 
 Status: accepted (2026-07-25)
 
