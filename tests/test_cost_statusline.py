@@ -724,3 +724,72 @@ class TestSubagentTranscripts:
         transcript.write_text(self._line("user") + "\n")
         (tmp_path / "session").write_text("not a directory")
         assert statusline.subagent_transcripts(transcript) == []
+
+
+class TestSavingsNeedMaterialRouting:
+    """A model the session barely touched cannot be the yardstick for all of it.
+
+    Regression for the second time this bug appeared. ADR-0009 stopped a configured model
+    being used as the baseline; reading subagent transcripts (ADR-0010) then let one trivial
+    delegation put a second model in the session, and the whole session was re-priced at its
+    rates — reproducing the same fabricated "saved 50%".
+    """
+
+    BIG = {"input_tokens": 10_000_000, "output_tokens": 10_000_000}
+    TINY = {"input_tokens": 1_000, "output_tokens": 1_000}
+
+    def _totals(self, entries, config=None):
+        return statusline.summarise(entries, TIERED, config or {}, last_user_line=0)
+
+    def test_an_incidental_touch_on_a_dearer_model_is_not_a_baseline(self):
+        result = self._totals([
+            {"model": "claude-sonnet-5", "usage": self.BIG, "line": 1},
+            {"model": "claude-fable-5", "usage": self.TINY, "line": 2},
+        ])
+        assert result["baseline"] == 0.0
+        assert statusline._segment_saved(result, {}) is None
+
+    def test_saved_still_cannot_equal_the_session_cost(self):
+        # claude-fable-5 is exactly 2x claude-sonnet-5, the ratio that manufactures 50%.
+        result = self._totals([
+            {"model": "claude-sonnet-5", "usage": self.BIG, "line": 1},
+            {"model": "claude-fable-5", "usage": self.TINY, "line": 2},
+        ])
+        assert result["baseline"] - result["session"] != pytest.approx(result["session"])
+
+    def test_a_real_share_of_delegated_work_still_reports(self):
+        result = self._totals([
+            {"model": "claude-sonnet-5", "usage": self.BIG, "line": 1},
+            {"model": "claude-fable-5", "usage": self.BIG, "line": 2},
+        ])
+        assert result["baseline"] > result["session"] > 0
+        assert "saved" in statusline._segment_saved(result, {})
+
+    def test_routing_off_means_nothing_was_saved(self):
+        entries = [
+            {"model": "claude-sonnet-5", "usage": self.BIG, "line": 1},
+            {"model": "claude-fable-5", "usage": self.BIG, "line": 2},
+        ]
+        result = self._totals(entries, {"routing": {"enabled": False}})
+        assert result["baseline"] == 0.0
+
+    def test_the_line_never_claims_savings_and_routing_off_at_once(self, tmp_path, home):
+        write_config(home, TIERED)
+        config = json.loads((home / "config.json").read_text())
+        config["routing"] = {"enabled": False}
+        (home / "config.json").write_text(json.dumps(config))
+        lines = [
+            transcript_line("user"),
+            transcript_line("assistant", msg_id="a", model="claude-sonnet-5", usage=self.BIG),
+            transcript_line("assistant", msg_id="b", model="claude-fable-5", usage=self.BIG),
+        ]
+        line = statusline.run(stdin_payload(write_transcript(tmp_path, lines)))
+        assert "routing off" in line and "saved" not in line
+
+    def test_an_explicit_baseline_cannot_bypass_the_share_test(self):
+        result = self._totals(
+            [{"model": "claude-sonnet-5", "usage": self.BIG, "line": 1},
+             {"model": "claude-fable-5", "usage": self.TINY, "line": 2}],
+            {"statusline": {"savings_baseline": "claude-fable-5"}},
+        )
+        assert result["baseline"] == 0.0

@@ -60,3 +60,22 @@ session. Delegated work runs in an agent file, so the delegated model never appe
   the routing one.
 - The scan is bounded by one directory listing per statusline refresh, and only for sessions that
   actually spawned agents.
+
+## Amendment (2026-07-26): materiality and routing state
+
+Reading subagent transcripts reintroduced the fabricated savings figure ADR-0009 removed, by a
+different route. A one-word probe sent to `heavy-task-fable` cost $0.21 in a $162 session — 0.128%
+of spend — but it put a second priced model in the transcript, which satisfied the two-model guard.
+The whole session was then re-priced at fable's rates. Fable is exactly 2x the session model, so
+`saved` equalled the session cost at 50% once more, printed on the same line as `routing off`.
+
+Two further conditions now apply before a savings figure is produced:
+
+- **The baseline model must account for at least `MIN_BASELINE_SHARE` (5%) of session cost.**
+  Incidental contact with a dearer model is not routing, and must not re-price everything else.
+- **Routing must be enabled.** With routing off nothing was routed, so nothing was saved; claiming
+  otherwise on the same line that says `routing off` is a contradiction the reader has to resolve.
+
+Both guards are unconditional and apply to `statusline.savings_baseline` too. The lesson worth
+recording is that the two-model rule was a proxy for "routing actually happened", and a proxy that
+held only while subagent usage was invisible.

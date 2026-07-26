@@ -30,6 +30,11 @@ SAVINGS_MIN_USD = 0.005
 # Savings are only measurable once a session has spanned more than one model. With a single
 # model in the transcript nothing was ever routed, so any figure would be a hypothetical.
 MIN_MODELS_FOR_SAVINGS = 2
+# ...and each of those models has to have done a real share of the work. Reading subagent
+# transcripts (ADR-0010) meant one trivial delegation put a second model in the session, and the
+# whole session was then re-priced at its rates: a $0.21 touch on a model twice the price of the
+# session model reported "saved 50%" across $162 of spend. Incidental contact is not routing.
+MIN_BASELINE_SHARE = 0.05
 
 
 def home_dir() -> Path:
@@ -266,12 +271,26 @@ def baseline_model(config: dict, pricing: dict[str, dict], observed: set[str]) -
     return max(sorted(candidates), key=lambda key: pricing[key]["output"])
 
 
+def _routing_state(config: dict) -> tuple[bool, int]:
+    """Read the two routing facts worth surfacing without depending on the hook."""
+    routing = config.get("routing")
+    enabled = routing.get("enabled", True) if isinstance(routing, dict) else True
+    models = config.get("models")
+    standard = models.get("standard") if isinstance(models, dict) else None
+    tiers = 3 if isinstance(standard, str) and standard.strip() else 2
+    requested = routing.get("tiers") if isinstance(routing, dict) else None
+    if requested in (2, 3) and not isinstance(requested, bool):
+        tiers = min(requested, tiers)
+    return (enabled if isinstance(enabled, bool) else True), tiers
+
+
 def summarise(entries: list[dict], pricing: dict[str, dict], config: dict, last_user_line: int) -> dict:
     totals = {
         "turn": 0.0, "session": 0.0, "baseline": 0.0, "tokens_in": 0, "tokens_out": 0,
         "unknown": set(), "baseline_model": None, "models": set(),
     }
     priced: list[dict] = []
+    by_model: dict[str, float] = {}
     for entry in entries:
         usage = entry["usage"]
         totals["tokens_in"] += (
@@ -293,30 +312,25 @@ def summarise(entries: list[dict], pricing: dict[str, dict], config: dict, last_
         totals["models"].add(key)
         cost = usage_cost(usage, effective_rates(usage, rates))
         totals["session"] += cost
+        by_model[key] = by_model.get(key, 0.0) + cost
         if entry["line"] > last_user_line:
             totals["turn"] += cost
         priced.append(usage)
 
-    if len(totals["models"]) >= MIN_MODELS_FOR_SAVINGS:
-        key = baseline_model(config, pricing, totals["models"])
+    # Routing off means nothing was routed, so there is nothing to have saved. Saying otherwise
+    # on the same line that reports "routing off" is a contradiction the reader has to resolve.
+    enabled, _ = _routing_state(config)
+    material = {
+        key for key, cost in by_model.items()
+        if totals["session"] > 0 and cost / totals["session"] >= MIN_BASELINE_SHARE
+    }
+    if enabled and len(material) >= MIN_MODELS_FOR_SAVINGS:
+        key = baseline_model(config, pricing, material)
         if key is not None:
             rates = pricing[key]
             totals["baseline"] = sum(usage_cost(usage, effective_rates(usage, rates)) for usage in priced)
             totals["baseline_model"] = key
     return totals
-
-
-def _routing_state(config: dict) -> tuple[bool, int]:
-    """Read the two routing facts worth surfacing without depending on the hook."""
-    routing = config.get("routing")
-    enabled = routing.get("enabled", True) if isinstance(routing, dict) else True
-    models = config.get("models")
-    standard = models.get("standard") if isinstance(models, dict) else None
-    tiers = 3 if isinstance(standard, str) and standard.strip() else 2
-    requested = routing.get("tiers") if isinstance(routing, dict) else None
-    if requested in (2, 3) and not isinstance(requested, bool):
-        tiers = min(requested, tiers)
-    return (enabled if isinstance(enabled, bool) else True), tiers
 
 
 def _segment_turn(totals: dict, _config: dict) -> str:
