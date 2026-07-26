@@ -138,14 +138,16 @@ def _render_carried(detail: dict, classifier: dict, config: dict, topical, echo)
 
 def _render_flip(prompt: str, detail: dict, classifier: dict, config: dict, echo) -> None:
     candidates = flip_candidates(prompt, detail, classifier, config)
+    echo("    what would flip it")
     if not candidates:
-        echo("    what would flip it")
         echo("      nothing in the built-in table or your learned terms raises this score")
         return
-    echo("    what would flip it")
-    for description, score, tier in candidates:
+    # Signals that actually change the destination come first; a raise that lands in the same
+    # place is context, not a flip, and must not be allowed to look like one.
+    current = router.select_tier(detail["score"], config)
+    for description, score, tier in sorted(candidates, key=lambda item: (item[2] == current, -item[1])):
         echo(f"      + {description:<48}scores {score}   {_destination(tier, config)}")
-    if all(tier is None for _, _, tier in candidates):
+    if all(tier == current for _, _, tier in candidates):
         echo("      none of these cross the edge on their own")
 
 

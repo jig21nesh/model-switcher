@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-for _location in (_HERE, *(_HERE.parent / name for name in ("scripts", "hooks", "statusline"))):
+# _HERE must end up first on sys.path: in the installed layout its siblings are the user's own
+# ~/.claude directories, and a hooks/ or scripts/ dir there must not shadow the installed modules.
+for _location in (*(_HERE.parent / name for name in ("statusline", "hooks", "scripts")), _HERE):
     if _location.is_dir():
         sys.path.insert(0, str(_location))
 

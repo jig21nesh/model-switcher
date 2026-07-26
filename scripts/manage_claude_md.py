@@ -28,7 +28,9 @@ def install(claude_md: Path, block: str, manifest: dict) -> str:
         content = BLOCK_RE.sub("", content).rstrip("\n")
         claude_md.write_text(f"{content}\n\n{block}", encoding="utf-8")
         return "updated"
-    claude_md.write_text(f"{content.rstrip()}\n\n{block}", encoding="utf-8")
+    # Append without rewriting the user's bytes, so uninstall can give back exactly what we found.
+    separator = "" if content.endswith("\n\n") else ("\n" if content.endswith("\n") else "\n\n")
+    claude_md.write_text(f"{content}{separator}{block}", encoding="utf-8")
     return "appended"
 
 
@@ -42,6 +44,15 @@ def uninstall(claude_md: Path, manifest: dict) -> str:
     if manifest.get("created_claude_md") and not remaining.strip():
         claude_md.unlink()
         return "removed file (was created by installer)"
+    backup = claude_md.with_name(claude_md.name + BACKUP_SUFFIX)
+    try:
+        original = backup.read_text(encoding="utf-8")
+    except OSError:
+        original = None
+    # When nothing but our block was added since install, give back the exact original bytes.
+    if original is not None and remaining.rstrip("\n") == original.rstrip("\n"):
+        claude_md.write_text(original, encoding="utf-8")
+        return "block removed"
     claude_md.write_text(remaining.rstrip("\n") + "\n" if remaining.strip() else "", encoding="utf-8")
     return "block removed"
 
