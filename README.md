@@ -234,7 +234,7 @@ helps before committing:
 ```text
 corpus: 2,124 usable prompts from 101 sessions (533 became real work, 1,591 did not)
 
-routing accuracy at threshold 5, measured on your own history:
+routing accuracy at your configured threshold, measured on your own history:
                 precision   recall     F1   wasted   missed
   built-in          33.0%    34.3%   33.6      372      350
   with terms        41.9%    42.4%   42.1      314      307
@@ -253,7 +253,7 @@ to consume it: [`docs/classifier-schema.md`](docs/classifier-schema.md).
 
 ### Pick a threshold from evidence
 
-`complexity.threshold` ships as `5` because a number was needed, not because 5 was measured. `tune`
+`complexity.threshold` ships as `3`, calibrated against a real corpus (ADR-0014) rather than guessed. `tune`
 answers the question the default was standing in for: on **your** history, what did prompts at each
 score actually turn into, and what would a different threshold have delegated, caught and cost?
 
@@ -684,6 +684,8 @@ middle band:
 }
 ```
 
+Both thresholds are set explicitly here; the shipped default is `3` with no middle tier.
+
 | Score | Routes to |
 |---|---|
 | `>= threshold` (5) | `heavy-task-fable` |
@@ -743,12 +745,12 @@ A model entry is used only when all four required rates are usable numbers — a
 ```json
 {
   "complexity": {
-    "threshold": 5
+    "threshold": 3
   }
 }
 ```
 
-Prompts scoring at or above the threshold (0–10, integer or float, clamped to 1–10) are delegated. Raise it if too much gets delegated, lower it for more heavy-model routing. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
+Prompts scoring at or above the threshold (0–10, integer or float, clamped to 1–10) are delegated. Raise it if too much gets delegated, lower it for more heavy-model routing. Don't guess — `model-switcher tune` shows what your own history says. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
 
 The default of `5` is a starting guess, not a measurement. `tune` replaces the guess with your own
 history — see [Pick a threshold from evidence](#pick-a-threshold-from-evidence) below.

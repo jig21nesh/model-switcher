@@ -9,7 +9,7 @@
     "tiers": "auto"
   },
   "complexity": {
-    "threshold": 5,
+    "threshold": 3,
     "standard_threshold": 3
   },
   "statusline": {

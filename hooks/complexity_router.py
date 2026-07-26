@@ -12,7 +12,11 @@ logging.basicConfig(stream=sys.stderr, level=logging.WARNING, format="model-swit
 logger = logging.getLogger(__name__)
 
 PRICING_URL = "https://claude.com/pricing"
-DEFAULT_THRESHOLD = 5
+# Scoring reads only the first REQUEST_WORDS words for vocabulary; see analyse_prompt. Measured
+# against a 2,186-prompt corpus, 80 words landed closest to the old delegation rate while raising
+# both precision and recall (ADR-0014).
+REQUEST_WORDS = 80
+DEFAULT_THRESHOLD = 3
 # Only consulted when a third tier is configured; the middle band is [standard, complex).
 DEFAULT_STANDARD_THRESHOLD = 3
 # Agent filename prefixes, kept in sync with scripts/generate_agent.py. The top tier keeps its
@@ -22,7 +26,7 @@ TIER_LABELS = {"complex": "COMPLEX", "standard": "MODERATE"}
 # A project override is a small settings file; anything bigger is not one.
 PROJECT_CONFIG_MAX_BYTES = 64 * 1024
 # Scoring beyond this many characters adds no signal and regex work on huge pastes must stay off
-# the interactive path; truncation itself is treated as a length signal.
+# the interactive path.
 SCORE_MAX_CHARS = 10_000
 STATE_MAX_AGE_SECONDS = 7 * 24 * 3600
 SESSION_ID_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
@@ -213,22 +217,23 @@ def final_score(base: float, adjustment: float, caps: list) -> int:
 
 def analyse_prompt(prompt: str, classifier: dict | None = None) -> dict:
     """Score a prompt and record why, so `explain` and routing can never disagree."""
-    truncated = len(prompt) > SCORE_MAX_CHARS
     text = prompt[:SCORE_MAX_CHARS].lower()
     tokens = text.split()
     words = len(tokens)
-    strong = _strong_hits(text)
-    moderate = [k for k, p in MODERATE_PATTERNS if p.search(text)]
+    # Vocabulary is read from the request, not from whatever was pasted beneath it. A long
+    # paste contains task verbs and domain terms whether or not the ask is hard, which is how
+    # 15% of a real corpus piled into the top score at *below* the accuracy of mid scores.
+    # Structural evidence below still reads the whole text: a stack trace is a stack trace
+    # wherever it appears.
+    request = " ".join(tokens[:REQUEST_WORDS])
+    strong = _strong_hits(request)
+    moderate = [k for k, p in MODERATE_PATTERNS if p.search(request)]
 
     signals: list[tuple[str, int]] = []
     if strong:
         signals.append((f"task verbs ({', '.join(strong[:3])})", 5 + min(len(strong) - 1, 2)))
     if moderate:
         signals.append((f"domain terms ({', '.join(moderate[:3])})", min(len(moderate), 3)))
-    if truncated or words >= 150:
-        signals.append(("long prompt", 2))
-    elif words >= 50:
-        signals.append(("medium prompt", 1))
     if len(NUMBERED_STEP_RE.findall(text)) >= 2:
         signals.append(("numbered steps", 2))
     if sum(text.count(c) for c in CONNECTIVES) >= 2:
@@ -241,7 +246,8 @@ def analyse_prompt(prompt: str, classifier: dict | None = None) -> dict:
         signals.append(("stack trace", 3))
 
     base = sum(points for _, points in signals)
-    adjustment, matched = learned_adjustment(text, classifier) if classifier else (0.0, {})
+    # Learned terms read the request for the same reason the keyword lists do.
+    adjustment, matched = learned_adjustment(request, classifier) if classifier else (0.0, {})
 
     # Short pure questions without a task verb are lookups; definitional questions are lookups
     # even when they mention task vocabulary; short affirmations continue in-session work.

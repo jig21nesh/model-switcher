@@ -250,8 +250,14 @@ class TestScoringScenarios:
         assert time.perf_counter() - start < 1.0
         assert 0 <= score <= 10
 
-    def test_truncated_prompt_gets_length_signal(self):
-        assert router.score_prompt("x" * (router.SCORE_MAX_CHARS + 100)) >= 2
+    def test_sheer_length_is_not_evidence_of_complexity(self):
+        # Length used to add points on its own, which is how pasted logs reached the top score
+        # while being less likely to become work than mid-scoring prompts (ADR-0014).
+        assert router.score_prompt("x" * (router.SCORE_MAX_CHARS + 100)) == 0
+
+    def test_a_short_request_scores_the_same_with_a_huge_paste_under_it(self):
+        request = "refactor the auth module and migrate the schema"
+        assert router.score_prompt(request) == router.score_prompt(request + "\n" + "log line " * 2000)
 
 
 class TestRunGuards:
@@ -790,7 +796,7 @@ class TestRoutingLadder:
     def test_a_two_tier_config_has_no_middle_band(self):
         rungs = router.routing_ladder({"models": {"complex": "opus", "simple": "sonnet"}})
         assert len(rungs) == 2
-        assert [rung["band"] for rung in rungs] == ["score < 5", "score >= 5"]
+        assert [rung["band"] for rung in rungs] == ["score < 3", "score >= 3"]
 
     def test_the_ladder_agrees_with_select_tier_at_every_score(self):
         # The whole point of one shared description: what a user is shown must be what runs.
