@@ -295,6 +295,12 @@ class TestRunGuards:
         write_config(home, config)
         assert router.run(hook_input("fix the header test")) == ""
 
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_threshold_falls_back_to_the_default(self, bad):
+        # NaN slips through every clamp: max(1.0, min(nan, 10.0)) lands on 1.0, the most
+        # aggressive routing there is, from a value the user probably fat-fingered.
+        assert router.threshold_from({"complexity": {"threshold": bad}}) == router.DEFAULT_THRESHOLD
+
     def test_float_threshold_honored(self, home):
         config = dict(CONFIGURED)
         config["complexity"] = {"threshold": 5.5}
@@ -355,17 +361,36 @@ class TestRunGuards:
         write_config(home, config)
         assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT))
 
-    def test_non_bool_routing_enabled_keeps_routing_on(self, home):
+    def test_non_bool_routing_enabled_turns_routing_off(self, home):
+        # Fail closed (ADR-0015): a user who disabled routing must not have it revived by a
+        # typo in the very value that records the disable.
         config = dict(CONFIGURED)
         config["routing"] = {"enabled": "no"}
         write_config(home, config)
-        assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT))
+        assert router.run(hook_input(COMPLEX_PROMPT)) == ""
 
-    def test_non_dict_routing_section_keeps_routing_on(self, home):
+    def test_non_dict_routing_section_turns_routing_off(self, home):
         config = dict(CONFIGURED)
         config["routing"] = False
         write_config(home, config)
+        assert router.run(hook_input(COMPLEX_PROMPT)) == ""
+
+    def test_a_missing_routing_section_keeps_the_enabled_default(self, home):
+        write_config(home, CONFIGURED)
         assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT))
+
+    def test_a_corrupt_config_file_silences_the_hook(self, home):
+        (home / "config.json").write_text("{not json")
+        assert router.run(hook_input(COMPLEX_PROMPT)) == ""
+
+    def test_a_non_object_config_silences_the_hook(self, home):
+        (home / "config.json").write_text("[]")
+        assert router.run(hook_input(COMPLEX_PROMPT)) == ""
+
+    def test_a_deeply_nested_config_silences_the_hook(self, home):
+        # Blows the JSON parser's recursion limit rather than failing its syntax.
+        (home / "config.json").write_text("[" * 300_000)
+        assert router.run(hook_input(COMPLEX_PROMPT)) == ""
 
     def test_cleanup_ignores_symlinked_state_dir(self, home, tmp_path_factory):
         import os
@@ -753,6 +778,30 @@ class TestScoringWithClassifier:
         assert router.analyse_prompt("yes go ahead")["caps"] == ["affirmation"]
 
 
+class TestStandardThresholdWarnings:
+    THREE_TIER = {"models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"}}
+
+    def test_a_default_standard_threshold_is_never_broken(self):
+        # threshold 1 sits below the built-in default standard edge, but the user never wrote
+        # standard_threshold; the router derives a working edge, so there is nothing to report.
+        config = {**self.THREE_TIER, "complexity": {"threshold": 1}}
+        findings = router.health_warnings(config, None, None)
+        assert not [message for _, message in findings if "standard_threshold" in message]
+
+    def test_a_user_written_collision_is_still_broken(self):
+        config = {**self.THREE_TIER, "complexity": {"threshold": 5, "standard_threshold": 9}}
+        findings = router.health_warnings(config, None, None)
+        assert any(severity == router.BROKEN and "standard_threshold" in message
+                   for severity, message in findings)
+
+
+class TestHomeDir:
+    def test_an_empty_env_var_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.setenv("MODEL_SWITCHER_HOME", "")
+        assert router.home_dir().is_absolute()
+        assert str(router.home_dir()).endswith(".claude/model-switcher")
+
+
 class TestClassifierEndToEnd:
     def test_a_learned_artifact_changes_routing(self, home):
         write_config(home, CONFIGURED)
@@ -766,6 +815,19 @@ class TestClassifierEndToEnd:
         (home / "classifier.json").write_text("{ corrupt")
         assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT))
         assert router.run(hook_input("what does this do?")) == ""
+
+    def test_a_deeply_nested_artifact_never_kills_the_directive(self, home):
+        # Small enough for the size gate, deep enough to blow the parser's stack: the
+        # RecursionError used to escape and silently discard the routing decision.
+        write_config(home, CONFIGURED)
+        (home / "classifier.json").write_text("[" * 300_000)
+        assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT))
+
+    def test_nan_and_infinite_weights_are_rejected(self, home):
+        # json.loads accepts NaN/Infinity literals, and a NaN weight clamps to the maximum
+        # boost — routing any prompt that contains that term.
+        classifier_file(home, {"foobar": float("nan"), "bazqux": float("inf"), "refactor": 0.8})
+        assert router.load_classifier()["terms"] == {"refactor": 0.8}
 
     def test_a_hostile_artifact_cannot_force_delegation_of_a_lookup(self, home):
         write_config(home, CONFIGURED)

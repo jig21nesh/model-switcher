@@ -44,14 +44,16 @@ def generic_agents(config: dict) -> tuple:
 
 
 def agent_routing_enabled(config: dict) -> bool:
-    """Off whenever prompt routing is off: one switch, no surprising half-on state."""
-    routing = config.get("routing")
-    if not isinstance(routing, dict):
-        return True
-    if routing.get("enabled") is False:
+    """Off whenever prompt routing is off: one switch, no surprising half-on state. Like the
+    prompt router, an ambiguous value reads as off (ADR-0015)."""
+    if not router.routing_enabled(config):
         return False
-    enabled = routing.get("agents", True)
-    return enabled if isinstance(enabled, bool) else True
+    routing = config.get("routing")
+    enabled = routing.get("agents", True) if isinstance(routing, dict) else True
+    if isinstance(enabled, bool):
+        return enabled
+    logger.warning("invalid routing.agents %r, agent routing stays off", enabled)
+    return False
 
 
 def agent_exists(name: str, agents_dir: Path) -> bool:
@@ -107,7 +109,9 @@ def run(stdin_text: str) -> str:
     if not isinstance(tool_input, dict):
         return ""
 
-    config = router.load_config()
+    # Same config resolution as the prompt router: a project that turns routing off (or on)
+    # applies to the agents its prompts spawn, not only to the prompts themselves.
+    config = router.merge_project_config(router.load_config(), router.load_project_config(payload.get("cwd")))
     if not agent_routing_enabled(config) or not router.models_configured(config):
         return ""
 
@@ -124,14 +128,14 @@ def run(stdin_text: str) -> str:
 
 
 def main() -> int:
-    # Never block a tool call because this hook had a bad day.
+    # Never block a tool call because this hook had a bad day. The print stays inside the try:
+    # a closed stdout pipe is exactly the kind of bad day this contract is about.
     try:
         output = run(sys.stdin.read())
+        if output:
+            print(output)
     except Exception as exc:  # noqa: BLE001
         logger.warning("agent router failed, leaving the call alone: %s", exc)
-        return 0
-    if output:
-        print(output)
     return 0
 
 

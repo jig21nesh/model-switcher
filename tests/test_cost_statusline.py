@@ -532,9 +532,20 @@ class TestRoutingSegment:
         config = {"models": {"complex": "f", "standard": "s"}, "routing": {"tiers": 2}}
         assert statusline._segment_routing({}, config) is None
 
-    @pytest.mark.parametrize("routing", ["nope", {"enabled": "false"}, {"tiers": True}, {}])
+    @pytest.mark.parametrize("routing", [{"tiers": True}, {}])
     def test_survives_a_malformed_routing_block(self, routing):
         assert statusline._segment_routing({}, {"routing": routing}) is None
+
+    @pytest.mark.parametrize("routing", ["nope", {"enabled": "false"}])
+    def test_an_ambiguous_routing_state_reads_as_off(self, routing):
+        # The hooks fail closed on these values (ADR-0015); the line must agree with them
+        # rather than imply a router that is staying silent is at work.
+        assert statusline._segment_routing({}, {"routing": routing}) == "routing off"
+
+    def test_an_empty_home_env_var_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.setenv("MODEL_SWITCHER_HOME", "")
+        assert statusline.home_dir().is_absolute()
+        assert str(statusline.home_dir()).endswith(".claude/model-switcher")
 
     def test_renders_the_model_ladder(self):
         config = {"models": {"complex": "fable", "standard": "sonnet", "simple": "haiku"}}
