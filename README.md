@@ -192,7 +192,7 @@ Routing is heuristic-based. You can tune the threshold in the config.
 
 ## When does it delegate?
 
-A prompt is routed to the heavy model when its complexity score reaches `complexity.threshold` (default 5). Real scored examples:
+A prompt is routed to the heavy model when its complexity score reaches `complexity.threshold` (default 3, recalibrated for the request-window scorer in ADR-0014). Real scored examples:
 
 | Score | Verdict | Prompt |
 |---|---|---|
@@ -206,12 +206,23 @@ A prompt is routed to the heavy model when its complexity score reaches `complex
 | 0/10 | simple | `what does this function do?` |
 | 0/10 | simple | `yes go ahead` |
 
-Scoring signals include:
+The score is a hand-written signal sum — every signal, what triggers it, and its points:
 
-- Strong task verbs such as `refactor`, `implement`, `migrate`, `build`, `review`, `analyse`, `debug`, `investigate`, `audit`, `harden`, and `profile` — inflections like `refactoring` and `migrating` count
-- Incident vocabulary such as `race condition`, `deadlock`, `memory leak`, `crash`, and `vulnerability`
-- Domain terms such as `test`, `database`, `api`, `schema`, `security`, `fix`, and `bug`
-- Numbered multi-step lists, code blocks, multiple file paths, and pasted stack traces
+| Signal | Examples | Points |
+|---|---|---|
+| Strong task verbs and incident vocabulary | `refactor`, `implement`, `migrate`, `debug`, `audit`, `race condition`, `deadlock`, `memory leak` — inflections like `refactoring` count; a negation just before (`don't refactor`) cancels the hit | **5** for the first, **+1** each for the second and third (max 7) |
+| Domain terms | `test`, `database`, `api`, `schema`, `security`, `fix`, `bug` | **+1** each, max 3 |
+| Pasted stack trace | `Traceback (most recent call last)`, `at app.js:12`, `SomeError:` | **+3** |
+| Numbered multi-step list (2+ items) | `1. … 2. …` | **+2** |
+| Chained requests (2+ connectives) | `then`, `and also`, `as well as`, `finally` | **+1** |
+| Fenced code block | | **+1** |
+| Multiple file paths (2+) | `auth.py utils.py` | **+1** |
+
+The base score is that sum. The learned adjustment — clamped to ±3, see
+[the learning algorithm](#the-learning-algorithm-and-its-alternatives) — is added, and the total
+is rounded and clamped to 0–10. If a lookup cap matched, the score is cut to **2** whatever else
+it earned; the caps run *after* the learned adjustment, so learned weights can never talk a
+lookup into being delegated.
 
 Vocabulary is scored from the **first 80 words** — the request — while the structural signals
 (lists, code blocks, stack traces) read the whole text: a long paste full of task verbs cannot
@@ -882,7 +893,7 @@ A model entry is used only when all four required rates are usable numbers — a
 
 Prompts scoring at or above the threshold (0–10, integer or float, clamped to 1–10) are delegated. Raise it if too much gets delegated, lower it for more heavy-model routing. Don't guess — `model-switcher tune` shows what your own history says. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
 
-The default of `5` is a starting guess, not a measurement. `tune` replaces the guess with your own
+The default of `3` is a starting guess, not a measurement. `tune` replaces the guess with your own
 history — see [Pick a threshold from evidence](#pick-a-threshold-from-evidence) below.
 
 ### 4. Switch routing on and off
