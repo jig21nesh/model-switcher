@@ -255,6 +255,57 @@ to consume it: [`docs/classifier-schema.md`](docs/classifier-schema.md).
 > the weights optimise for *became work*, which correlates with *needed the better model* without
 > being identical to it. Review the candidate before applying it.
 
+### The learning algorithm, and its alternatives
+
+What `learn` runs is a **smoothed, evidence-shrunk log-odds model** — the scoring half of a
+naive-Bayes text classifier, kept small enough to audit by eye. Five steps:
+
+1. **Label.** A prompt is *heavy* when the turn it started spawned a subagent, made 3+ file
+   edits, or made 12+ tool calls; otherwise *light*. Output tokens are deliberately not a
+   signal — thinking models inflate them, and verbosity is not work. Prompts that cannot be
+   judged on their own ("yes go ahead", slash commands, turns with no observable outcome) are
+   dropped; roughly a quarter of a real corpus.
+2. **Count.** For every usable word (3–24 characters, at most one hyphen, not secret-shaped,
+   not a stopword), count how many heavy and how many light prompts contain it — *distinct per
+   prompt*, so repetition inside one prompt counts once.
+3. **Weight.**
+
+   ```text
+   weight(term) = log( p_heavy / p_light ) x n / (n + 40)
+   ```
+
+   where `p_heavy` and `p_light` are the term's add-0.5-smoothed share of heavy and light
+   prompts, and `n` is its total occurrences. The `n / (n + 40)` shrinkage is the part that
+   matters: raw log-odds pins any word that happens to appear only in heavy prompts to the
+   ceiling — the first run put "acer" there. Shrinking toward zero by evidence means a term seen
+   ten times keeps a fifth of its raw weight and one seen two hundred times keeps five sixths.
+4. **Gate.** A term must appear in **3+ separate sessions** and **10+ times** overall (also the
+   privacy floor — nothing pasted once can reach the file), carry **|weight| ≥ 0.35** to be worth
+   storing, and is clipped to **±1.5**. At most 400 terms are kept. Below 150 usable prompts the
+   tool refuses to emit anything at all.
+5. **Bound at apply time.** The router sums the weights of *distinct* matched terms and clamps
+   the sum to **±3**, so the learned table can nudge a score but never overrule the built-in
+   signals. Constants and rationale: ADR-0006; portable format: `docs/classifier-schema.md`.
+
+**Alternatives, and why this one.** The constraints do the choosing: scoring runs on *every
+prompt* before Claude sees it, so it must be offline, deterministic, effectively instant, and
+stdlib-only; the artifact must be human-reviewable and safe to leave on disk.
+
+| Alternative | What it would buy | Why it is not used |
+|---|---|---|
+| Full naive Bayes (replace the scorer) | One principled model instead of two halves | The learned table would gain unbounded authority; the ±3 clamp deliberately keeps the auditable built-in signals in charge, and the structural signals (stack traces, lists) have no term to hang a weight on |
+| Logistic regression on bag-of-words | Correct handling of correlated terms — today ten synonyms of "deploy" each add weight independently | Needs an optimizer and training infrastructure; on a ~2k-prompt personal corpus the gain over shrunk log-odds is marginal, and per-term evidence gates (the privacy floor) are harder to express |
+| TF-IDF + linear model / SVM | Standard text-classification machinery | Third-party dependencies; the runtime is stdlib-only by hard rule, because these scripts run on every prompt in every session |
+| Sentence embeddings + small classifier | Synonyms, paraphrase, and non-English prompts (the scorer's real blind spot) | A model download and per-prompt inference on the interactive path; scoring must stay offline, deterministic, and dependency-free |
+| LLM-as-router (ask a cheap model to classify) | The highest ceiling — real understanding of the ask | Tokens, latency, and network on exactly the path that must cost and leak nothing; also non-deterministic, so `explain` could disagree with what routing actually did |
+
+Two honest limitations follow from the choice: term independence (correlated vocabulary
+over-counts, bounded by the ±3 clamp) and literal matching (no stemming, so `refactor` and
+`refactoring` are learned separately, and a prompt in a language with no learned terms scores 0
+adjustment). If a constraint ever falls — say a local embedding model becomes acceptable on this
+path — the artifact, not the Python, is the interface: a stronger producer can replace `learn`
+and write the same file, and the router would not change at all.
+
 ### Pick a threshold from evidence
 
 `complexity.threshold` ships as `3`, calibrated against a real corpus (ADR-0014) rather than guessed. `tune`
@@ -668,7 +719,9 @@ pick the tier.
 The exact tokenization, the filter table, and the rules another tool must follow to consume the
 file are specified in [`docs/classifier-schema.md`](docs/classifier-schema.md) — the file, not
 the Python, is the interface. `model-switcher classifier` shows you everything currently in it;
-`model-switcher explain` shows both halves working on any prompt you give it.
+`model-switcher explain` shows both halves working on any prompt you give it. The precise weight
+formula, and the alternatives that were considered and rejected, are in
+[The learning algorithm, and its alternatives](#the-learning-algorithm-and-its-alternatives).
 
 ---
 
