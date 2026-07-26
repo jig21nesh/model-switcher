@@ -211,7 +211,11 @@ Scoring signals include:
 - Strong task verbs such as `refactor`, `implement`, `migrate`, `build`, `review`, `analyse`, `debug`, `investigate`, `audit`, `harden`, and `profile` — inflections like `refactoring` and `migrating` count
 - Incident vocabulary such as `race condition`, `deadlock`, `memory leak`, `crash`, and `vulnerability`
 - Domain terms such as `test`, `database`, `api`, `schema`, `security`, `fix`, and `bug`
-- Numbered multi-step lists, 150+ word prompts, code blocks, multiple file paths, and pasted stack traces
+- Numbered multi-step lists, code blocks, multiple file paths, and pasted stack traces
+
+Vocabulary is scored from the **first 80 words** — the request — while the structural signals
+(lists, code blocks, stack traces) read the whole text: a long paste full of task verbs cannot
+route itself, but a stack trace counts wherever it appears. Prompt length itself scores nothing.
 
 Capped back to simple: short pure questions with no task verb, definitional questions, short affirmations, and negated verbs (`don't refactor`).
 
@@ -595,6 +599,79 @@ model-switcher uninstall --yes    # do it
 
 ---
 
+## Command reference
+
+Routing itself needs no commands — the hooks do everything per prompt. This is the complete
+surface for when you want to inspect, tune, or switch things. `model-switcher` below is the
+installed CLI at `~/.claude/model-switcher/model-switcher`; add that directory to `PATH` or
+symlink the script once to type just `model-switcher`.
+
+### The CLI
+
+| Command | What it does | Useful flags |
+|---|---|---|
+| `model-switcher status` | Config summary (models, routing state, pricing age, classifier) plus health checks: broken agent files, price inversions, failed delegations with their last error | `--transcripts` |
+| `model-switcher tiers` | The routing ladder your config actually produces — each score band and the model that serves it | `--config` |
+| `model-switcher explain "<prompt>"` | Scores a prompt without spending a token: the verdict, what carried it there, how close the call was, and what would flip it | `--no-classifier` |
+| `model-switcher classifier` | What the learned classifier contains: every term and weight, which of your projects taught it each word, and how much of the table is noise | `--transcripts` |
+| `model-switcher learn` | Rebuilds the learned weights from your own transcript history and reports before/after routing accuracy; writes a candidate only | `--apply` to promote, `--max-sessions` |
+| `model-switcher tune` | What your history says `complexity.threshold` should be, with cost and precision at each candidate value | `--transcripts`, `--max-sessions` |
+| `model-switcher pricing` | Compares your rate table against the maintained one | `--offline` (bundled table), `--yes` (apply) |
+| `model-switcher uninstall` | Dry run of a full removal; your `config.json` and learned classifier survive | `--yes` (actually do it) |
+
+Every command works offline, reads only local files, and never sends anything anywhere.
+
+### From inside a session
+
+Everything below is a small edit to `~/.claude/model-switcher/config.json` or a CLI call — you can
+make the edits yourself or simply ask Claude to. Config changes take effect on your **next prompt**
+with no restart; only changes to `models.*` need `./install.sh` re-run, because the tier agent
+files are generated from them.
+
+| I want to… | Do this |
+|---|---|
+| **Turn routing off** (statusline and cost tracking keep working) | `"routing": {"enabled": false}` — see [§4](#4-switch-routing-on-and-off) |
+| Turn routing back on | `"routing": {"enabled": true}` (or remove the key) |
+| Stop only the agent-spawn rewrites | `"routing": {"agents": false}` — see [§1b](#1b-routing-claudes-own-agents) |
+| Turn routing off (or on) for one project only | `.claude/model-switcher.json` in that project — see [§4](#4-switch-routing-on-and-off) |
+| Remove model-switcher entirely | `model-switcher uninstall --yes` — restores your settings byte-for-byte |
+| **Configure expensive / middle / cheap models** | `models.complex` / `models.standard` / `models.simple`, then re-run `./install.sh` — see [§1](#1-choose-your-models) and [§1a](#1a-optional-add-a-middle-tier) |
+| See which model serves which score band | `model-switcher tiers` |
+| Check the whole install and what is wrong with it | `model-switcher status` |
+| **See the learned terms and their weights** | `model-switcher classifier` |
+| See why one prompt routes where it does | `model-switcher explain "the prompt"` |
+| **Update the learned weights from my history** | `model-switcher learn`, review, then `model-switcher learn --apply` |
+| Pick a threshold from evidence instead of guessing | `model-switcher tune` |
+| Keep the cost figures honest | `model-switcher pricing --yes` when rates change |
+
+### The classifier: format and algorithm
+
+The learned half of scoring lives in one file, `~/.claude/model-switcher/classifier.json`
+(`schema_version` 1). Its payload is `scoring.terms`: a flat map of word → weight, where a
+positive weight means prompts containing that word historically became real work and a negative
+one means they resolved as lookups. No prompt text, hashes, or paths are ever stored.
+
+**How it is built** (`learn`): every past prompt in your local transcripts is labelled by what
+actually followed it — tool calls, file edits, and spawned subagents mean it *became work*.
+Per-word weights come from how strongly the word separates the two groups, and a term must
+survive support filters before it can appear at all: seen in ≥3 separate sessions and ≥10 times,
+shaped to exclude identifiers, hostnames, and API keys. `learn` writes a candidate and changes
+nothing until `--apply`.
+
+**How it is applied** (every prompt, deterministically, offline): built-in signals score the
+request — vocabulary from the first 80 words, structure (stack traces, code blocks, lists) from
+the first 10 KB — then the learned adjustment is added: the weights of *distinct* matched terms
+are summed and the sum clamped to ±`max_adjustment` (3.0), so the learned table can never
+overrule the built-in signals entirely. The total is clamped to 0–10 and the threshold bands
+pick the tier.
+
+The exact tokenization, the filter table, and the rules another tool must follow to consume the
+file are specified in [`docs/classifier-schema.md`](docs/classifier-schema.md) — the file, not
+the Python, is the interface. `model-switcher classifier` shows you everything currently in it;
+`model-switcher explain` shows both halves working on any prompt you give it.
+
+---
+
 ## Configuration
 
 All configuration lives in `~/.claude/model-switcher/config.json`.
@@ -638,6 +715,36 @@ The installer prints the same ladder when it finishes, and `explain` prints it w
 the band your prompt landed in. All three come from one function, so what you are shown is what
 the router will do.
 
+### 1a. Optional: add a middle tier
+
+With two tiers, everything above the threshold pays top-model rates — including work that is more
+than the cheap model handles well but nowhere near worth Fable. Setting `models.standard` adds a
+middle band:
+
+```json
+{
+  "models": { "complex": "fable", "standard": "sonnet", "simple": "haiku" },
+  "complexity": { "threshold": 5, "standard_threshold": 3 }
+}
+```
+
+Both thresholds are set explicitly here; the shipped default is `3` with no middle tier.
+
+| Score | Routes to |
+|---|---|
+| `>= threshold` (5) | `heavy-task-fable` |
+| `>= standard_threshold` (3), below 5 | `mid-task-sonnet` |
+| below 3 | answered in-session on `simple` |
+
+**Re-run `./install.sh` after adding it** — that generates the second agent. Removing
+`models.standard` and re-running deletes it again. Check the result with `model-switcher tiers`.
+
+`routing.tiers` controls this explicitly: `"auto"` (the default — three tiers when `models.standard`
+is valid, two otherwise), or a literal `2`/`3`. A project can drop to two tiers with
+`{"routing": {"tiers": 2}}` in `.claude/model-switcher.json` without touching the global config.
+`standard_threshold` is always forced strictly below `threshold`; an overlapping pair is clamped
+with a warning rather than silently making the middle band unreachable.
+
 ### 1b. Routing Claude's own agents
 
 Your prompt is not the only thing that gets delegated. When Claude spawns a `general-purpose`
@@ -670,36 +777,6 @@ Disable with `{"routing": {"agents": false}}`; it is also off whenever `routing.
 > **Note:** a rewrite sends work to `models.complex`. If that model has no available quota the
 > delegation fails, and that is not detectable offline — the agent file exists and the config is
 > valid. `model-switcher status` reports failed delegations with their reason.
-
-### 1a. Optional: add a middle tier
-
-With two tiers, everything above the threshold pays top-model rates — including work that is more
-than the cheap model handles well but nowhere near worth Fable. Setting `models.standard` adds a
-middle band:
-
-```json
-{
-  "models": { "complex": "fable", "standard": "sonnet", "simple": "haiku" },
-  "complexity": { "threshold": 5, "standard_threshold": 3 }
-}
-```
-
-Both thresholds are set explicitly here; the shipped default is `3` with no middle tier.
-
-| Score | Routes to |
-|---|---|
-| `>= threshold` (5) | `heavy-task-fable` |
-| `>= standard_threshold` (3), below 5 | `mid-task-sonnet` |
-| below 3 | answered in-session on `simple` |
-
-**Re-run `./install.sh` after adding it** — that generates the second agent. Removing
-`models.standard` and re-running deletes it again. Check the result with `model-switcher tiers`.
-
-`routing.tiers` controls this explicitly: `"auto"` (the default — three tiers when `models.standard`
-is valid, two otherwise), or a literal `2`/`3`. A project can drop to two tiers with
-`{"routing": {"tiers": 2}}` in `.claude/model-switcher.json` without touching the global config.
-`standard_threshold` is always forced strictly below `threshold`; an overlapping pair is clamped
-with a warning rather than silently making the middle band unreachable.
 
 ### 2. Configure pricing
 
