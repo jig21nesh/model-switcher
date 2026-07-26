@@ -832,9 +832,10 @@ Choose your own line with `statusline.segments`, in the order you want them:
 ```
 
 `savings_baseline` pins the comparison to a specific pricing key instead of letting it float to
-whatever the session's dearest model turned out to be. It does not bypass the two-model rule — a
-session that never left one model still reports no saving. Unknown segment names are ignored with a
-warning rather than breaking the line.
+whatever the session's dearest model turned out to be. It picks among the models the session
+actually ran — a model that never appears in the transcript is ignored, and it does not bypass the
+two-model or material-share rules: a session that never left one model still reports no saving.
+Unknown segment names are ignored with a warning rather than breaking the line.
 
 Statusline before pricing is configured:
 

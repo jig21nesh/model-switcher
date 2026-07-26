@@ -79,3 +79,26 @@ Two further conditions now apply before a savings figure is produced:
 Both guards are unconditional and apply to `statusline.savings_baseline` too. The lesson worth
 recording is that the two-model rule was a proxy for "routing actually happened", and a proxy that
 held only while subagent usage was invisible.
+
+## Amendment (2026-07-26): turn attribution and double-counting guards
+
+An adversarial audit of the merged-transcript arithmetic found four weaknesses in how entries are
+attributed and deduplicated:
+
+- **Tool results are not prompts.** Claude Code records every tool result as a `type:"user"` line.
+  Treating those as turn boundaries collapsed `turn $` to roughly the cost of the final API call of
+  the turn — in one measured session, 636 of 667 user records were tool results. Only messages
+  containing typed text now move the boundary.
+- **One API call, one charge.** Entries are deduplicated by message id across the session file and
+  every subagent file, so a call recorded in two files cannot be paid for twice. Measured across
+  recent sessions the overlap today is zero; the guard covers the transcript layouts not yet seen.
+- **Timestamps are compared as times, not text.** `10:00:00.500Z` sorts before `10:00:00Z` as a
+  string, silently dropping in-turn agent work when the two writers disagree on precision or offset
+  spelling. Stamps that parse are compared as datetimes; text comparison remains only as the
+  fallback for stamps that do not.
+- **The no-timestamp fallback is per-prompt, not per-file.** When the *last* prompt carries no
+  stamp, agent work counts toward the session but never the turn — the understate-don't-guess rule,
+  now applied to exactly the prompt that defines the boundary.
+
+The explicit `savings_baseline` override is also confined to models the session actually ran,
+closing the last route by which a never-observed model could become the yardstick.
