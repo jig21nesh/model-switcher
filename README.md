@@ -767,6 +767,8 @@ history — see [Pick a threshold from evidence](#pick-a-threshold-from-evidence
 
 With `routing.enabled` set to `false` the hook stays silent: no scoring, no delegation directives, no setup nags. The statusline and cost tracking are unaffected. Takes effect on your next prompt — no re-install needed. Absent or `true` means routing is on.
 
+The switch fails closed: an invalid `routing.enabled` value, a `routing` section that is not an object, or a `config.json` that exists but cannot be parsed all read as routing **off**, with a one-line stderr warning. Only a genuinely absent config (a fresh install) keeps the enabled default. Turning routing off cannot be undone by a typo in the same file.
+
 Any project can override the switch and the threshold with a `.claude/model-switcher.json` in the project root:
 
 ```json
@@ -776,7 +778,7 @@ Any project can override the switch and the threshold with a `.claude/model-swit
 }
 ```
 
-Only the `routing` and `complexity` sections can be overridden per project — `models` and pricing stay global, because the heavy-task agent is generated from the global config at install time. Typical uses: routing off globally but on for one expensive repo, or a higher threshold in a repo where most work is simple.
+Only the `routing` and `complexity` sections can be overridden per project — `models` and pricing stay global, because the heavy-task agent is generated from the global config at install time. Typical uses: routing off globally but on for one expensive repo, or a higher threshold in a repo where most work is simple. Overrides apply to both hooks: a project that flips routing changes prompt delegation and agent-spawn rewrites alike.
 
 Two things to watch:
 

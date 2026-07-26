@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -103,15 +104,28 @@ MODERATE_PATTERNS = tuple((k, _keyword_pattern(k)) for k in MODERATE_KEYWORDS)
 
 
 def home_dir() -> Path:
-    return Path(os.environ.get("MODEL_SWITCHER_HOME", str(Path.home() / ".claude" / "model-switcher")))
+    # `or`, not a get() default: a set-but-empty variable must not resolve to the CWD.
+    return Path(os.environ.get("MODEL_SWITCHER_HOME") or str(Path.home() / ".claude" / "model-switcher"))
+
+
+# What load_config returns when the file exists but cannot be trusted. The user's last known
+# intent — possibly "disabled" — is in that file, so an unreadable config is not permission to
+# route (ADR-0015). Only a genuinely absent config reads as a fresh install.
+_UNREADABLE_CONFIG = {"routing": {"enabled": False}}
 
 
 def load_config() -> dict:
     try:
         config = json.loads((home_dir() / "config.json").read_text(encoding="utf-8"))
-        return config if isinstance(config, dict) else {}
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError, RecursionError):
+        logger.warning("config.json is unreadable; routing stays off until it parses")
+        return dict(_UNREADABLE_CONFIG)
+    if not isinstance(config, dict):
+        logger.warning("config.json is not a JSON object; routing stays off until it is")
+        return dict(_UNREADABLE_CONFIG)
+    return config
 
 
 def load_project_config(cwd: object) -> dict:
@@ -124,14 +138,16 @@ def load_project_config(cwd: object) -> dict:
             return {}
         override = json.loads(path.read_text(encoding="utf-8"))
         return override if isinstance(override, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {}
 
 
 # An override value that fails its type check is dropped so the global value stays in effect —
 # ADR-0003: override failures fall open to the global config, never to hardcoded defaults.
+# NaN and Infinity are valid to json.loads but poison to arithmetic (a NaN weight clamps to the
+# maximum boost), so a number must be finite to count as one.
 def _is_number(value: object) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float))
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
 _OVERRIDE_KEY_TYPES = {
@@ -165,14 +181,20 @@ def merge_project_config(config: dict, override: dict) -> dict:
 
 
 def routing_enabled(config: dict) -> bool:
+    """Routing needs a well-formed yes. A user who turned it off must not have it revived by a
+    typo, so anything ambiguous reads as off; only an absent section keeps the enabled default
+    (ADR-0015)."""
     routing = config.get("routing")
-    if not isinstance(routing, dict):
+    if routing is None:
         return True
+    if not isinstance(routing, dict):
+        logger.warning("invalid routing section %r, routing stays off", routing)
+        return False
     value = routing.get("enabled", True)
     if isinstance(value, bool):
         return value
-    logger.warning("invalid routing.enabled %r, routing stays enabled", value)
-    return True
+    logger.warning("invalid routing.enabled %r, routing stays off", value)
+    return False
 
 
 def _strong_hits(text: str) -> list[str]:
@@ -199,7 +221,9 @@ def learned_adjustment(text: str, classifier: dict) -> tuple[float, dict[str, fl
         return 0.0, {}
     matched = {term: weights[term] for term in classifier_terms(text) if term in weights}
     limit = classifier.get("max_adjustment", CLASSIFIER_MAX_ADJUSTMENT)
-    return max(-limit, min(limit, sum(matched.values()))), matched
+    # fsum: plain sum() of mixed-magnitude floats depends on set-iteration order on Python < 3.12,
+    # and the scoring path must be deterministic everywhere.
+    return max(-limit, min(limit, math.fsum(matched.values()))), matched
 
 
 def final_score(base: float, adjustment: float, caps: list) -> int:
@@ -283,7 +307,9 @@ def load_classifier() -> dict:
             logger.warning("classifier is larger than %s bytes, ignoring it", CLASSIFIER_MAX_BYTES)
             return {}
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: a deeply nested artifact passes the size gate but blows the parser's
+        # stack, and escaping here used to take the whole routing directive down with it.
         return {}
     if not isinstance(data, dict) or data.get("schema_version") != CLASSIFIER_SCHEMA_VERSION:
         return {}
@@ -307,8 +333,9 @@ def load_classifier() -> dict:
 
 def _numeric_setting(complexity: dict, key: str, default: int) -> float:
     value = complexity.get(key, default)
-    # bool is a subclass of int; "threshold": true must not become threshold 1.
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    # bool is a subclass of int ("threshold": true must not become 1), and NaN slips through
+    # every clamp to land on the most aggressive setting.
+    if not _is_number(value):
         logger.warning("invalid complexity.%s %r, using default %s", key, value, default)
         return float(default)
     clamped = max(1.0, min(float(value), 10.0))
@@ -506,7 +533,11 @@ def health_warnings(config: dict, session_model: object = None, agents_dir: Path
 
     complexity = _complexity_section(config)
     raw_standard = _numeric_setting(complexity, "standard_threshold", DEFAULT_STANDARD_THRESHOLD)
-    if tiers_configured(config) == 3 and raw_standard >= threshold_from(config):
+    # Only a value the user actually wrote can be BROKEN. When standard_threshold is unset,
+    # standard_threshold_from() derives a working edge below the threshold on its own, and
+    # interrupting the session about a key nobody wrote would be noise.
+    if ("standard_threshold" in complexity and tiers_configured(config) == 3
+            and raw_standard >= threshold_from(config)):
         warnings.append((BROKEN,
             f"complexity.standard_threshold ({raw_standard:g}) is not below threshold "
             f"({threshold_from(config):g}); the middle tier is unreachable as written"))
@@ -522,7 +553,7 @@ def in_session_checks_enabled(config: dict) -> bool:
 def session_model_from_settings() -> str | None:
     try:
         settings = json.loads((claude_dir() / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     model = settings.get("model") if isinstance(settings, dict) else None
     return model if isinstance(model, str) and MODEL_NAME_RE.fullmatch(model) else None

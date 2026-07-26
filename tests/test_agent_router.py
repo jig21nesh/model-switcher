@@ -138,6 +138,24 @@ class TestLeavingWellAlone:
         make_agents(claude, "heavy-task-fable")
         assert agent_router.run(hook_input()) == ""
 
+    @pytest.mark.parametrize("routing", [{"enabled": "yes"}, {"agents": "yes"}, "nope"])
+    def test_an_ambiguous_routing_value_turns_it_off(self, install, routing):
+        # Fail closed (ADR-0015), in step with the prompt router.
+        claude, home = install
+        configure(home, {**CONFIGURED, "routing": routing})
+        make_agents(claude, "heavy-task-fable")
+        assert agent_router.run(hook_input()) == ""
+
+    def test_a_project_override_disabling_routing_stops_rewrites(self, install, tmp_path):
+        claude, home = install
+        configure(home, CONFIGURED)
+        make_agents(claude, "heavy-task-fable")
+        project = tmp_path / "proj"
+        (project / ".claude").mkdir(parents=True)
+        (project / ".claude" / "model-switcher.json").write_text('{"routing": {"enabled": false}}')
+        assert agent_router.run(hook_input(cwd=str(project))) == ""
+        assert rewritten(agent_router.run(hook_input())) == "heavy-task-fable"
+
     def test_it_is_off_when_models_are_not_configured(self, install):
         claude, home = install
         configure(home, {"models": {}})
@@ -200,6 +218,24 @@ class TestMain:
         monkeypatch.setattr("sys.stdin", type("S", (), {"read": staticmethod(explode)})())
         assert agent_router.main() == 0
         assert capsys.readouterr().out == ""
+
+    def test_a_broken_stdout_never_fails_the_tool_call(self, install, monkeypatch):
+        # A closed pipe surfaces at print time; that failure must not turn into exit 1.
+        claude, home = install
+        configure(home, CONFIGURED)
+        make_agents(claude, "heavy-task-fable")
+        payload = hook_input()
+        monkeypatch.setattr("sys.stdin", type("S", (), {"read": staticmethod(lambda: payload)})())
+
+        class BrokenOut:
+            def write(self, *_args):
+                raise BrokenPipeError
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr("sys.stdout", BrokenOut())
+        assert agent_router.main() == 0
 
     def test_emits_the_rewrite_on_stdout(self, install, monkeypatch, capsys):
         claude, home = install

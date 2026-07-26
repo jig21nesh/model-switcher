@@ -15,6 +15,7 @@ terms are compared as plain strings and never compiled, and no prompt text is pr
 """
 
 import json
+import math
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -43,7 +44,9 @@ PROJECT_LABEL_CHARS = 40
 
 
 def _is_number(value: object) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float))
+    # Mirrors complexity_router._is_number: finite only — NaN/Infinity parse as JSON but fall
+    # outside every distribution band and poison the weight range line.
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
 def read_artifact(path: Path) -> tuple[dict | None, str]:

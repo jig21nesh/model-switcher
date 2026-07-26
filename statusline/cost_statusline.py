@@ -39,14 +39,15 @@ MIN_BASELINE_SHARE = 0.05
 
 
 def home_dir() -> Path:
-    return Path(os.environ.get("MODEL_SWITCHER_HOME", str(Path.home() / ".claude" / "model-switcher")))
+    # `or`, not a get() default: a set-but-empty variable must not resolve to the CWD.
+    return Path(os.environ.get("MODEL_SWITCHER_HOME") or str(Path.home() / ".claude" / "model-switcher"))
 
 
 def load_config() -> dict:
     try:
         config = json.loads((home_dir() / "config.json").read_text(encoding="utf-8"))
         return config if isinstance(config, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {}
 
 
@@ -320,6 +321,10 @@ def baseline_model(config: dict, pricing: dict[str, dict], observed: set[str]) -
 def _routing_state(config: dict) -> tuple[bool, int]:
     """Read the two routing facts worth surfacing without depending on the hook."""
     routing = config.get("routing")
+    if routing is not None and not isinstance(routing, dict):
+        # The hooks read an ambiguous routing state as off (ADR-0015); saying otherwise here
+        # would claim savings from a router that is staying silent.
+        return False, 2
     enabled = routing.get("enabled", True) if isinstance(routing, dict) else True
     models = config.get("models")
     standard = models.get("standard") if isinstance(models, dict) else None
@@ -327,7 +332,7 @@ def _routing_state(config: dict) -> tuple[bool, int]:
     requested = routing.get("tiers") if isinstance(routing, dict) else None
     if requested in (2, 3) and not isinstance(requested, bool):
         tiers = min(requested, tiers)
-    return (enabled if isinstance(enabled, bool) else True), tiers
+    return (enabled if isinstance(enabled, bool) else False), tiers
 
 
 def summarise(entries: list[dict], pricing: dict[str, dict], config: dict, last_user_line: int) -> dict:
