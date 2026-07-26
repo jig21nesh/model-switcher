@@ -24,10 +24,20 @@ def write_config(home, pricing=PRICING, wrap_command=None):
 
 def transcript_line(entry_type, msg_id=None, model="claude-sonnet-5", usage=None, is_meta=False, sidechain=False):
     if entry_type == "user":
-        return json.dumps({"type": "user", "isMeta": is_meta, "isSidechain": sidechain, "message": {}})
+        return json.dumps(
+            {"type": "user", "isMeta": is_meta, "isSidechain": sidechain, "message": {"content": "next prompt"}}
+        )
     return json.dumps(
         {"type": "assistant", "isSidechain": sidechain, "message": {"id": msg_id, "model": model, "usage": usage}}
     )
+
+
+def tool_result_line(timestamp=None):
+    """Claude Code writes every tool result back as a type:"user" record with no text block."""
+    body = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}
+    if timestamp:
+        body["timestamp"] = timestamp
+    return json.dumps(body)
 
 
 def write_transcript(tmp_path, lines):
@@ -65,6 +75,17 @@ class TestCostMath:
 
     def test_prefix_match_for_dated_model_id(self):
         assert statusline.match_pricing("claude-sonnet-5-20250929", PRICING) == PRICING["claude-sonnet-5"]
+
+    def test_a_shared_prefix_without_a_separator_is_not_a_match(self):
+        # claude-sonnet-55 is a different model than claude-sonnet-5, not a longer spelling of it.
+        assert statusline.match_pricing("claude-sonnet-55", PRICING) is None
+
+    def test_negative_token_counts_are_poison_not_credit(self):
+        usage = {"input_tokens": -1_000_000, "output_tokens": 500}
+        assert statusline.usage_cost(usage, PRICING["claude-sonnet-5"]) == pytest.approx(0.0075)
+
+    def test_boolean_token_counts_are_ignored(self):
+        assert statusline.usage_cost({"input_tokens": True}, PRICING["claude-sonnet-5"]) == 0.0
 
     def test_longest_prefix_wins(self):
         pricing = dict(PRICING, **{"claude-sonnet-5-20250929": {k: 1.0 for k in statusline.RATE_KEYS}})
@@ -115,6 +136,17 @@ class TestRun:
         line = statusline.run(stdin_payload(transcript))
         assert "session $0.19" not in line  # opus rates: 1000*15+2000*18.75+10000*1.5+500*75 = 105000/1e6
         assert f"session {statusline.format_cost(0.1050)}" in line
+
+    def test_ttl_only_cache_writes_appear_in_the_token_count(self, home, tmp_path):
+        # These tokens are charged, so a display that reads only the flat total would
+        # show dollars beside "0 in".
+        write_config(home)
+        usage = {"cache_creation": {"ephemeral_1h_input_tokens": 1_000_000, "ephemeral_5m_input_tokens": 0}}
+        transcript = write_transcript(
+            tmp_path, [transcript_line("user"), transcript_line("assistant", msg_id="m1", usage=usage)],
+        )
+        line = statusline.run(stdin_payload(transcript))
+        assert "1.0M in" in line and "session $3.75" in line
 
     def test_sidechain_user_message_does_not_reset_turn(self, home, tmp_path):
         write_config(home)
@@ -189,6 +221,53 @@ class TestRun:
         monkeypatch.setattr("sys.stdin", io.StringIO("garbage"))
         assert statusline.main() == 0
         assert capsys.readouterr().out.strip() != ""
+
+
+class TestPromptDetection:
+    def test_typed_text_is_a_prompt(self):
+        assert statusline._is_prompt({"content": "fix the bug"})
+        assert statusline._is_prompt({"content": [{"type": "text", "text": "fix the bug"}]})
+
+    def test_tool_results_are_not_prompts(self):
+        content = [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+        assert not statusline._is_prompt({"content": content})
+
+    @pytest.mark.parametrize("message", [{}, "nope", None, {"content": "   "}, {"content": 5}])
+    def test_blank_or_malformed_messages_are_not_prompts(self, message):
+        assert not statusline._is_prompt(message)
+
+
+class TestTurnBoundary:
+    """`turn $` is the cost since the last typed prompt — tool round-trips must not reset it."""
+
+    def test_tool_results_do_not_reset_the_turn(self, home, tmp_path):
+        write_config(home)
+        transcript = write_transcript(
+            tmp_path,
+            [
+                transcript_line("user"),
+                transcript_line("assistant", msg_id="m1", usage=USAGE),
+                tool_result_line(),
+                transcript_line("assistant", msg_id="m2", usage=USAGE),
+            ],
+        )
+        line = statusline.run(stdin_payload(transcript))
+        assert f"turn {statusline.format_cost(2 * USAGE_COST)}" in line
+
+    def test_a_new_prompt_still_resets_the_turn(self, home, tmp_path):
+        write_config(home)
+        transcript = write_transcript(
+            tmp_path,
+            [
+                transcript_line("user"),
+                transcript_line("assistant", msg_id="m1", usage=USAGE),
+                tool_result_line(),
+                transcript_line("user"),
+                transcript_line("assistant", msg_id="m2", usage=USAGE),
+            ],
+        )
+        line = statusline.run(stdin_payload(transcript))
+        assert f"turn {statusline.format_cost(USAGE_COST)}" in line
 
 
 class TestFormatting:
@@ -333,9 +412,16 @@ class TestBaselineModel:
         observed = {"claude-sonnet-5", "claude-sonnet-4-6"}
         assert statusline.baseline_model(config, TIERED, observed) == "claude-sonnet-4-6"
 
-    def test_an_explicit_override_wins(self):
+    def test_an_explicit_override_wins_when_the_session_ran_it(self):
+        config = {"statusline": {"savings_baseline": "claude-sonnet-4-6"}}
+        observed = {"claude-sonnet-5", "claude-sonnet-4-6", "claude-fable-5"}
+        assert statusline.baseline_model(config, TIERED, observed) == "claude-sonnet-4-6"
+
+    def test_an_override_the_session_never_ran_is_ignored(self):
+        # The override picks among observed models; it cannot introduce a counterfactual one.
         config = {"statusline": {"savings_baseline": "claude-fable-5"}}
-        assert statusline.baseline_model(config, TIERED, {"claude-sonnet-5"}) == "claude-fable-5"
+        observed = {"claude-sonnet-5", "claude-sonnet-4-6"}
+        assert statusline.baseline_model(config, TIERED, observed) == "claude-sonnet-4-6"
 
     def test_an_override_naming_an_unpriced_model_is_ignored(self):
         config = {"statusline": {"savings_baseline": "nope"}}
@@ -608,9 +694,13 @@ class TestBillableTokens:
                  "cache_creation": {"ephemeral_5m_input_tokens": 3, "ephemeral_1h_input_tokens": 4}}
         assert statusline.billable_tokens(usage) == 7
 
-    @pytest.mark.parametrize("usage", [{}, {"input_tokens": None}, {"output_tokens": "many"}])
+    @pytest.mark.parametrize("usage", [{}, {"input_tokens": None}, {"output_tokens": "many"}, {"input_tokens": -5}])
     def test_treats_unusable_values_as_nothing(self, usage):
         assert statusline.billable_tokens(usage) == 0
+
+    def test_a_negative_field_cannot_cancel_a_real_one(self):
+        # A poisoned negative must not suppress the `no rate:` warning for tokens that billed.
+        assert statusline.billable_tokens({"input_tokens": -5, "output_tokens": 5}) == 5
 
 
 class TestSubagentTranscripts:
@@ -630,7 +720,7 @@ class TestSubagentTranscripts:
 
     def _line(self, kind, msg_id=None, model="claude-sonnet-5", usage=None, timestamp=None):
         if kind == "user":
-            body = {"type": "user", "message": {}}
+            body = {"type": "user", "message": {"content": [{"type": "text", "text": "go"}]}}
         else:
             body = {"type": "assistant", "message": {"id": msg_id, "model": model, "usage": usage}}
         if timestamp:
@@ -706,6 +796,98 @@ class TestSubagentTranscripts:
         transcript = self._session(
             tmp_path, [self._line("user")],
             {"subagents/agent-x.jsonl": [self._line("a", "m2", "claude-sonnet-5", self.USAGE)]},
+        )
+        line = statusline.run(stdin_payload(transcript))
+        assert "turn $0.0000" in line and "session $12.00" in line
+
+    def test_agent_work_between_prompt_and_tool_result_stays_in_the_turn(self, tmp_path, home):
+        # The tool result lands after the agent finishes; it must not become the boundary
+        # that pushes the agent's cost out of the turn.
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user", timestamp="2026-07-25T10:00:00Z"),
+             tool_result_line(timestamp="2026-07-25T10:10:00Z")],
+            {"subagents/agent-x.jsonl": [
+                self._line("a", "m2", "claude-sonnet-5", self.USAGE, timestamp="2026-07-25T10:05:00Z")]},
+        )
+        assert "turn $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_an_entry_recorded_in_both_files_is_paid_once(self, tmp_path, home):
+        write_config(home, TIERED)
+        shared = self._line("a", "m1", "claude-sonnet-5", self.USAGE)
+        transcript = self._session(
+            tmp_path, [self._line("user"), shared], {"subagents/agent-x.jsonl": [shared]},
+        )
+        assert "session $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_the_same_id_in_two_agent_files_is_paid_once(self, tmp_path, home):
+        write_config(home, TIERED)
+        shared = self._line("a", "m1", "claude-sonnet-5", self.USAGE)
+        transcript = self._session(
+            tmp_path, [self._line("user")],
+            {"subagents/agent-x.jsonl": [shared], "subagents/agent-y.jsonl": [shared]},
+        )
+        assert "session $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_entries_without_ids_are_never_mistaken_for_duplicates(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user"), self._line("a", usage=self.USAGE)],
+            {"subagents/agent-x.jsonl": [self._line("a", usage=self.USAGE)]},
+        )
+        assert "session $24.00" in statusline.run(stdin_payload(transcript))
+
+    def test_precision_differences_do_not_drop_in_turn_work(self, tmp_path, home):
+        # Text comparison would exclude this: '.' sorts before 'Z'.
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user", timestamp="2026-07-25T10:00:00Z")],
+            {"subagents/agent-x.jsonl": [
+                self._line("a", "m2", "claude-sonnet-5", self.USAGE, timestamp="2026-07-25T10:00:00.500Z")]},
+        )
+        assert "turn $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_offset_spelling_differences_do_not_drop_in_turn_work(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user", timestamp="2026-07-25T10:00:00Z")],
+            {"subagents/agent-x.jsonl": [
+                self._line("a", "m2", "claude-sonnet-5", self.USAGE, timestamp="2026-07-25T10:00:01+00:00")]},
+        )
+        assert "turn $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_unparseable_stamps_fall_back_to_text_comparison(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user", timestamp="stamp-a")],
+            {"subagents/agent-x.jsonl": [
+                self._line("a", "m2", "claude-sonnet-5", self.USAGE, timestamp="stamp-b")]},
+        )
+        assert "turn $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_mixed_naive_and_aware_stamps_fall_back_to_text_comparison(self, tmp_path, home):
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user", timestamp="2026-07-25T10:00:00")],
+            {"subagents/agent-x.jsonl": [
+                self._line("a", "m2", "claude-sonnet-5", self.USAGE, timestamp="2026-07-25T10:05:00Z")]},
+        )
+        assert "turn $12.00" in statusline.run(stdin_payload(transcript))
+
+    def test_a_last_prompt_without_a_stamp_keeps_agent_work_session_only(self, tmp_path, home):
+        # The boundary is the LAST prompt; an earlier stamped prompt cannot stand in for it.
+        write_config(home, TIERED)
+        transcript = self._session(
+            tmp_path,
+            [self._line("user", timestamp="2026-07-25T10:00:00Z"), self._line("user")],
+            {"subagents/agent-x.jsonl": [
+                self._line("a", "m2", "claude-sonnet-5", self.USAGE, timestamp="2026-07-25T10:05:00Z")]},
         )
         line = statusline.run(stdin_payload(transcript))
         assert "turn $0.0000" in line and "session $12.00" in line
@@ -793,3 +975,13 @@ class TestSavingsNeedMaterialRouting:
             {"statusline": {"savings_baseline": "claude-fable-5"}},
         )
         assert result["baseline"] == 0.0
+
+    def test_an_override_never_run_cannot_become_the_yardstick(self):
+        # Two material models pass the gates, but the override names a third the session
+        # never touched; the yardstick must stay one of the models that actually ran.
+        result = self._totals(
+            [{"model": "claude-sonnet-5", "usage": self.BIG, "line": 1},
+             {"model": "claude-sonnet-4-6", "usage": self.BIG, "line": 2}],
+            {"statusline": {"savings_baseline": "claude-fable-5"}},
+        )
+        assert result["baseline_model"] == "claude-sonnet-4-6"

@@ -6,6 +6,7 @@ import math
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 logging.basicConfig(stream=sys.stderr, level=logging.WARNING, format="model-switcher %(levelname)s: %(message)s")
@@ -93,8 +94,9 @@ def resolve_pricing(model_id: str, pricing: dict[str, dict]) -> tuple[str, dict]
     """
     if model_id in pricing:
         return model_id, pricing[model_id]
-    # Dated releases (claude-sonnet-5-20250929) match their base entry (claude-sonnet-5).
-    prefixes = [key for key in pricing if model_id.startswith(key)]
+    # Dated releases (claude-sonnet-5-20250929) match their base entry (claude-sonnet-5). The
+    # separator is part of the match: claude-sonnet-55 is a different model, not a longer spelling.
+    prefixes = [key for key in pricing if model_id.startswith(key + "-")]
     if prefixes:
         key = max(prefixes, key=len)
         return key, pricing[key]
@@ -106,8 +108,22 @@ def match_pricing(model_id: str, pricing: dict[str, dict]) -> dict | None:
     return resolved[1] if resolved is not None else None
 
 
+def _is_prompt(message: object) -> bool:
+    """A message the user actually typed. Claude Code records every tool result as a type:"user"
+    line too; taking those as turn boundaries collapses `turn $` to the cost of the final API
+    call of the turn, because each tool round-trip resets the boundary."""
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(isinstance(block, dict) and block.get("type") == "text" for block in content)
+    return False
+
+
 def parse_transcript(path: Path) -> tuple[list[dict], int, str]:
-    """Deduped assistant usage, the line of the last real user message, and its timestamp.
+    """Deduped assistant usage, the line of the last real user prompt, and its timestamp.
 
     The timestamp is what lets subagent work be attributed to the current turn: it lives in a
     different file, so there is no line number to compare against.
@@ -124,9 +140,10 @@ def parse_transcript(path: Path) -> tuple[list[dict], int, str]:
             if not isinstance(obj, dict):
                 continue
             if obj.get("type") == "user" and not obj.get("isMeta") and not obj.get("isSidechain"):
-                last_user_line = i
-                stamp = obj.get("timestamp")
-                last_user_ts = stamp if isinstance(stamp, str) else ""
+                if _is_prompt(obj.get("message")):
+                    last_user_line = i
+                    stamp = obj.get("timestamp")
+                    last_user_ts = stamp if isinstance(stamp, str) else ""
             elif obj.get("type") == "assistant":
                 message = obj.get("message")
                 if not isinstance(message, dict):
@@ -135,11 +152,12 @@ def parse_transcript(path: Path) -> tuple[list[dict], int, str]:
                 if not isinstance(usage, dict):
                     continue
                 # Streaming rewrites the same message id; the last entry carries final usage.
-                msg_id = message.get("id") or obj.get("uuid") or f"line-{i}"
+                msg_id = message.get("id") or obj.get("uuid")
                 stamp = obj.get("timestamp")
-                entries[msg_id] = {
+                entries[msg_id or f"line-{i}"] = {
                     "model": str(message.get("model") or ""), "usage": usage, "line": i,
                     "timestamp": stamp if isinstance(stamp, str) else "",
+                    "id": msg_id if isinstance(msg_id, str) else "",
                 }
     return list(entries.values()), last_user_line, last_user_ts
 
@@ -161,15 +179,33 @@ def subagent_transcripts(transcript: Path) -> list[Path]:
         return []
 
 
+def _parse_stamp(stamp: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _at_or_after(stamp: str, boundary: str) -> bool:
+    """stamp >= boundary, tolerant of the two writers disagreeing on precision or offset
+    spelling ('10:00:00Z' vs '10:00:00.500Z' vs '10:00:00+00:00'). Text comparison is the
+    fallback, not the rule: '.' sorts before 'Z', so it gets same-instant stamps wrong."""
+    parsed, edge = _parse_stamp(stamp), _parse_stamp(boundary)
+    if parsed is not None and edge is not None and (parsed.tzinfo is None) == (edge.tzinfo is None):
+        return parsed >= edge
+    return stamp >= boundary
+
+
 def collect_entries(transcript: Path) -> tuple[list[dict], int]:
     """Every assistant entry that this session paid for, session file and subagents alike.
 
     Subagent entries carry no line number in the session file, so their place in the current
-    turn is decided by timestamp against the last user message. Where a transcript has no
-    timestamps at all, they count towards the session but never towards the turn — understating
+    turn is decided by timestamp against the last user prompt. Where the last prompt carries
+    no timestamp, they count towards the session but never towards the turn — understating
     the turn is better than attributing an hour of agent work to whatever was typed last.
     """
     entries, last_user_line, last_user_ts = parse_transcript(transcript)
+    seen = {entry["id"] for entry in entries if entry["id"]}
     for path in subagent_transcripts(transcript):
         try:
             spawned, _, _ = parse_transcript(path)
@@ -177,7 +213,15 @@ def collect_entries(transcript: Path) -> tuple[list[dict], int]:
             logger.warning("cannot read subagent transcript: %s", exc)
             continue
         for entry in spawned:
-            in_turn = bool(last_user_ts) and entry["timestamp"] >= last_user_ts
+            # One API call, one charge — however many files recorded it.
+            if entry["id"]:
+                if entry["id"] in seen:
+                    continue
+                seen.add(entry["id"])
+            in_turn = (
+                bool(last_user_ts) and bool(entry["timestamp"])
+                and _at_or_after(entry["timestamp"], last_user_ts)
+            )
             # Sorts after last_user_line when in the turn, before it otherwise.
             entry["line"] = last_user_line + 1 if in_turn else -1
             entries.append(entry)
@@ -224,7 +268,8 @@ def usage_cost(usage: dict, rates: dict) -> float:
 
 def _tokens(usage: dict, key: str) -> int:
     value = usage.get(key, 0)
-    return value if isinstance(value, int) else 0
+    # bool is an int, and a negative count is poisoned input, not a credit against real spend.
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def billable_tokens(usage: dict) -> int:
@@ -262,7 +307,8 @@ def baseline_model(config: dict, pricing: dict[str, dict], observed: set[str]) -
     statusline = config.get("statusline")
     if isinstance(statusline, dict):
         explicit = statusline.get("savings_baseline")
-        if isinstance(explicit, str) and explicit in pricing:
+        # The override picks among the models that ran; it cannot smuggle in one that never did.
+        if isinstance(explicit, str) and explicit in pricing and explicit in observed:
             return explicit
     candidates = [key for key in observed if key in pricing]
     if not candidates:
@@ -293,9 +339,10 @@ def summarise(entries: list[dict], pricing: dict[str, dict], config: dict, last_
     by_model: dict[str, float] = {}
     for entry in entries:
         usage = entry["usage"]
+        five_minute, one_hour, unsplit = cache_write_tokens(usage)
         totals["tokens_in"] += (
             _tokens(usage, "input_tokens")
-            + _tokens(usage, "cache_creation_input_tokens")
+            + five_minute + one_hour + unsplit
             + _tokens(usage, "cache_read_input_tokens")
         )
         totals["tokens_out"] += _tokens(usage, "output_tokens")
