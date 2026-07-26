@@ -162,9 +162,11 @@ class TestRenderRouted:
         assert "exactly on the COMPLEX threshold (3)" in out
 
     def test_truncates_a_long_contribution_list(self):
+        # Six contributions: task verbs, domain terms, numbered steps, file paths, code block,
+        # stack trace. Length is deliberately not among them any more (ADR-0014).
         out = render(
-            "1. refactor the api\n2. migrate the schema\n3. debug the pipeline\n"
-            "```\ntraceback (most recent call last)\n```\n" + "word " * 200
+            "1. refactor the api in src/auth.py\n2. migrate the schema in db/schema.sql\n"
+            "3. debug the pipeline\n```\ntraceback (most recent call last)\n```\n"
         )
         assert "and 1 more" in out
 

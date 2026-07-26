@@ -3,6 +3,7 @@ import json
 import pytest
 
 import analyze_history
+import complexity_router as router
 import tune_threshold as tune
 
 PRICING = {
@@ -355,7 +356,7 @@ class TestReport:
 
     def test_an_unusable_threshold_falls_back_to_the_default(self):
         out = render(dict(CONFIG, complexity={"threshold": "high"}), self._corpus())
-        assert "<- current threshold (5)" in out
+        assert f"<- current threshold ({router.DEFAULT_THRESHOLD:g})" in out
 
     def test_survives_a_corpus_where_every_prompt_scores_the_same(self):
         out = render(CONFIG, [turn(LIGHT_TEXT, heavy=False) for _ in range(5)])
