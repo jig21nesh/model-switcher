@@ -7,6 +7,10 @@ import sys
 from pathlib import Path
 
 MARKER = "model-switcher"
+# Entries are recognised by the scripts we install, under their model-switcher directory. Matching
+# on the bare product name deleted user hooks that merely mentioned it and blocked ours from
+# installing beside them.
+OUR_SCRIPTS = ("complexity_router.py", "agent_router.py", "cost_statusline.py")
 
 
 def hook_command(install_dir: Path) -> str:
@@ -22,45 +26,66 @@ def statusline_command(install_dir: Path) -> str:
 
 
 def _is_ours(command: str | None) -> bool:
-    return isinstance(command, str) and MARKER in command
+    return isinstance(command, str) and any(f"{MARKER}/{name}" in command for name in OUR_SCRIPTS)
+
+
+def _matcher_list(settings: dict, event: str) -> list:
+    hooks = settings.get("hooks")
+    matchers = hooks.get(event) if isinstance(hooks, dict) else None
+    return matchers if isinstance(matchers, list) else []
+
+
+def _hook_entries(matcher: object) -> list:
+    entries = matcher.get("hooks") if isinstance(matcher, dict) else None
+    return entries if isinstance(entries, list) else []
 
 
 def _has_our_hook(settings: dict, event: str = "UserPromptSubmit") -> bool:
-    for matcher in settings.get("hooks", {}).get(event, []):
-        if not isinstance(matcher, dict):
-            continue
-        for hook in matcher.get("hooks", []):
-            if isinstance(hook, dict) and _is_ours(hook.get("command")):
-                return True
-    return False
+    return any(
+        isinstance(hook, dict) and _is_ours(hook.get("command"))
+        for matcher in _matcher_list(settings, event)
+        for hook in _hook_entries(matcher)
+    )
+
+
+def _append_hook(settings: dict, event: str, entry: dict) -> None:
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        # A non-object hooks value is invalid for Claude Code anyway; the original is in the .bak.
+        hooks = settings["hooks"] = {}
+    matchers = hooks.get(event)
+    if not isinstance(matchers, list):
+        matchers = hooks[event] = []
+    matchers.append(entry)
 
 
 def _drop_our_hooks(settings: dict, event: str) -> None:
-    matchers = settings.get("hooks", {}).get(event)
-    if not isinstance(matchers, list):
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict) or not isinstance(hooks.get(event), list):
         return
-    kept = [
-        m for m in matchers
-        if not (isinstance(m, dict) and any(
-            isinstance(h, dict) and _is_ours(h.get("command")) for h in m.get("hooks", [])
-        ))
-    ]
-    if kept:
-        settings["hooks"][event] = kept
+    kept_matchers = []
+    for matcher in hooks[event]:
+        entries = _hook_entries(matcher)
+        kept = [h for h in entries if not (isinstance(h, dict) and _is_ours(h.get("command")))]
+        if len(kept) != len(entries):
+            if not kept:
+                continue  # the matcher entry existed only to carry our hook
+            matcher = {**matcher, "hooks": kept}
+        kept_matchers.append(matcher)
+    if kept_matchers:
+        hooks[event] = kept_matchers
     else:
-        settings["hooks"].pop(event, None)
+        hooks.pop(event, None)
 
 
 def install(settings: dict, manifest: dict, config: dict, install_dir: Path, set_model: str | None) -> None:
     if not _has_our_hook(settings):
-        settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
-            {"hooks": [{"type": "command", "command": hook_command(install_dir)}]}
-        )
+        _append_hook(settings, "UserPromptSubmit",
+                     {"hooks": [{"type": "command", "command": hook_command(install_dir)}]})
     # Matched on the Task tool so it runs only when Claude actually spawns an agent.
     if not _has_our_hook(settings, "PreToolUse"):
-        settings.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
-            {"matcher": "Task", "hooks": [{"type": "command", "command": agent_hook_command(install_dir)}]}
-        )
+        _append_hook(settings, "PreToolUse",
+                     {"matcher": "Task", "hooks": [{"type": "command", "command": agent_hook_command(install_dir)}]})
 
     current_statusline = settings.get("statusLine")
     if not (isinstance(current_statusline, dict) and _is_ours(current_statusline.get("command"))):
@@ -101,7 +126,10 @@ def uninstall(settings: dict, manifest: dict) -> None:
 def _load_json(path: Path) -> dict:
     if not path.exists():
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(f"cannot parse {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{path} does not contain a JSON object")
     return data
@@ -110,6 +138,19 @@ def _load_json(path: Path) -> dict:
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _restore_backup(settings_path: Path, backup: Path, expected: dict) -> bool:
+    """Put the pre-install bytes back when uninstall lands on exactly the pre-install state,
+    so a file we reformatted (indentation, key order) comes back untouched."""
+    try:
+        original = json.loads(backup.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if original != expected:
+        return False
+    shutil.copy2(backup, settings_path)
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -122,9 +163,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--set-model", default=None)
     args = parser.parse_args(argv)
 
-    settings = _load_json(args.settings)
-    manifest = _load_json(args.manifest)
-    config = _load_json(args.config)
+    try:
+        settings = _load_json(args.settings)
+        manifest = _load_json(args.manifest)
+        config = _load_json(args.config)
+    except (OSError, ValueError) as exc:
+        print(f"model-switcher: {exc}", file=sys.stderr)
+        return 2
 
     backup = args.settings.with_name(args.settings.name + f".{MARKER}.bak")
     if args.settings.exists() and not backup.exists():
@@ -134,10 +179,11 @@ def main(argv: list[str] | None = None) -> int:
         install(settings, manifest, config, args.install_dir, args.set_model)
         _write_json(args.manifest, manifest)
         _write_json(args.config, config)
+        _write_json(args.settings, settings)
     else:
         uninstall(settings, manifest)
-
-    _write_json(args.settings, settings)
+        if not (backup.exists() and _restore_backup(args.settings, backup, settings)):
+            _write_json(args.settings, settings)
     print(f"{args.action} complete: {args.settings}")
     return 0
 

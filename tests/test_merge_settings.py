@@ -81,6 +81,82 @@ class TestInstall:
         assert read(paths["settings"])["model"] == "claude-fable-5"
 
 
+class TestForeignHooksMentioningTheName:
+    """The marker must match our installed scripts, not anything containing 'model-switcher'."""
+
+    HOOK = {"hooks": [{"type": "command", "command": "echo my-model-switcher-logger ran"}]}
+
+    def test_install_still_adds_our_hook_beside_it(self, paths):
+        paths["settings"].write_text(json.dumps({"hooks": {"UserPromptSubmit": [self.HOOK]}}))
+        run_cli("install", paths)
+        matchers = read(paths["settings"])["hooks"]["UserPromptSubmit"]
+        assert len(matchers) == 2
+        assert any("complexity_router.py" in h["command"] for m in matchers for h in m["hooks"])
+
+    def test_uninstall_leaves_the_user_hook_alone(self, paths):
+        paths["settings"].write_text(json.dumps({"hooks": {"UserPromptSubmit": [self.HOOK]}}))
+        run_cli("install", paths)
+        run_cli("uninstall", paths)
+        assert read(paths["settings"])["hooks"]["UserPromptSubmit"] == [self.HOOK]
+
+    def test_a_user_hook_sharing_our_matcher_entry_survives_uninstall(self, paths):
+        run_cli("install", paths)
+        settings = read(paths["settings"])
+        settings["hooks"]["UserPromptSubmit"][0]["hooks"].append({"type": "command", "command": "echo mine"})
+        paths["settings"].write_text(json.dumps(settings))
+        run_cli("uninstall", paths)
+        remaining = read(paths["settings"])["hooks"]["UserPromptSubmit"]
+        assert remaining == [{"hooks": [{"type": "command", "command": "echo mine"}]}]
+
+
+class TestMalformedSettings:
+    def test_invalid_json_fails_cleanly_and_touches_nothing(self, paths, capsys):
+        paths["settings"].write_text("{not json")
+        assert run_cli("install", paths) == 2
+        err = capsys.readouterr().err
+        assert "cannot parse" in err and len(err.strip().splitlines()) == 1
+        assert paths["settings"].read_text() == "{not json"
+        assert not paths["manifest"].exists()
+
+    def test_a_non_object_settings_file_fails_cleanly(self, paths, capsys):
+        paths["settings"].write_text("[1, 2]")
+        assert run_cli("install", paths) == 2
+        assert "JSON object" in capsys.readouterr().err
+
+    def test_hooks_as_a_list_does_not_crash_install(self, paths):
+        paths["settings"].write_text(json.dumps({"hooks": ["what"]}))
+        assert run_cli("install", paths) == 0
+        assert "UserPromptSubmit" in read(paths["settings"])["hooks"]
+
+    def test_hooks_as_a_list_does_not_crash_uninstall(self, paths):
+        paths["settings"].write_text(json.dumps({"hooks": ["what"]}))
+        assert run_cli("uninstall", paths) == 0
+
+    def test_a_matcher_entry_that_is_not_an_object_survives(self, paths):
+        paths["settings"].write_text(json.dumps({"hooks": {"UserPromptSubmit": ["odd", {"hooks": "text"}]}}))
+        assert run_cli("install", paths) == 0
+        assert run_cli("uninstall", paths) == 0
+        assert read(paths["settings"])["hooks"]["UserPromptSubmit"] == ["odd", {"hooks": "text"}]
+
+
+class TestByteForByteRestore:
+    def test_uninstall_restores_the_original_formatting(self, paths):
+        original = '{\n    "model": "claude-fable-5"\n}\n'
+        paths["settings"].write_text(original)
+        run_cli("install", paths, set_model="sonnet")
+        run_cli("uninstall", paths)
+        assert paths["settings"].read_text() == original
+
+    def test_post_install_changes_survive_and_win_over_the_backup(self, paths):
+        paths["settings"].write_text('{"model": "claude-fable-5"}')
+        run_cli("install", paths, set_model="sonnet")
+        settings = read(paths["settings"])
+        settings["theme"] = "dark"
+        paths["settings"].write_text(json.dumps(settings))
+        run_cli("uninstall", paths)
+        assert read(paths["settings"]) == {"model": "claude-fable-5", "theme": "dark"}
+
+
 class TestUninstall:
     def test_uninstall_restores_previous_state(self, paths):
         previous_status = {"type": "command", "command": "bash /home/user/statusline.sh"}

@@ -111,6 +111,23 @@ class TestUninstall:
         assert run_cli("uninstall", paths) == 0
         assert not paths["claude_md"].exists()
 
+    def test_restores_bytes_for_a_file_without_trailing_newline(self, paths):
+        original = "# My Global Standards\n- rule"
+        paths["claude_md"].write_text(original)
+        run_cli("install", paths)
+        run_cli("uninstall", paths)
+        assert paths["claude_md"].read_text() == original
+
+    def test_keeps_user_edits_made_after_install(self, paths):
+        paths["claude_md"].write_text(EXISTING)
+        run_cli("install", paths)
+        paths["claude_md"].write_text(paths["claude_md"].read_text() + "\n# post-install note\n")
+        run_cli("uninstall", paths)
+        content = paths["claude_md"].read_text()
+        assert "# post-install note" in content
+        assert "- rule two" in content
+        assert "model-switcher" not in content
+
     def test_duplicate_blocks_all_removed(self, paths):
         block = paths["block"].read_text().strip() + "\n"
         paths["claude_md"].write_text(f"{EXISTING}\n{block}\n{block}")

@@ -86,6 +86,40 @@ def test_install_then_uninstall_restores_a_preexisting_setup(claude_dir):
     assert (claude_dir / "model-switcher" / "config.json").exists(), "config must survive uninstall"
 
 
+def test_uninstall_restores_nonstandard_formatting_byte_for_byte(claude_dir):
+    # Neither file is in the shape our writers produce: 4-space indent, no trailing newline.
+    settings = claude_dir / "settings.json"
+    claude_md = claude_dir / "CLAUDE.md"
+    original_settings = '{\n    "model": "opus",\n    "permissions": {"allow": []}\n}'
+    original_md = "# My rules\n- no trailing newline"
+    settings.write_text(original_settings, encoding="utf-8")
+    claude_md.write_text(original_md, encoding="utf-8")
+
+    run_installer(claude_dir, "--skip-model")
+    run_installer(claude_dir, "--uninstall")
+
+    assert settings.read_text(encoding="utf-8") == original_settings
+    assert claude_md.read_text(encoding="utf-8") == original_md
+
+
+def test_user_directories_beside_the_install_cannot_shadow_the_cli(claude_dir):
+    # ~/.claude/hooks is a real directory on many machines; a same-named module there must
+    # never be imported in place of the installed one.
+    run_installer(claude_dir, "--skip-model")
+    install_dir = claude_dir / "model-switcher"
+    (claude_dir / "hooks").mkdir(exist_ok=True)
+    for name in ("cli.py", "complexity_router.py"):
+        (claude_dir / "hooks" / name).write_text("raise SystemExit('hijacked')\n", encoding="utf-8")
+
+    env = {"PATH": os.environ["PATH"], "HOME": str(claude_dir.parent), "MODEL_SWITCHER_HOME": str(install_dir)}
+    result = subprocess.run(
+        ["python3", str(install_dir / "model-switcher"), "tiers"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "hijacked" not in result.stdout + result.stderr
+
+
 def test_install_sets_and_restores_the_session_model(claude_dir):
     settings = claude_dir / "settings.json"
     settings.write_text(json.dumps({"model": "opus"}) + "\n", encoding="utf-8")
