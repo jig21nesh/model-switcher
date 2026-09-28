@@ -174,27 +174,85 @@ Requires `python3` (3.10+) on `PATH`.
 
 ## Optional Jev evaluation before routing
 
-Jev is a typed decision model from TypeSafe. It evaluates the current request and chooses among
-the configured tiers. Python validates its response and applies a confidence gate. The
-[research analysis](docs/jev-research.md) and [ADR-0016](docs/adr/0016-optional-jev-pre-routing.md)
-explain the trade-offs and contributor-facing architecture.
+Jev is TypeSafe's typed decision model. The offline classifier scores your request first; Jev
+then independently chooses a tier, and the router records both recommendations before selecting
+a model. Jev evaluates the task; your configured Claude model still performs it.
 
-Fresh installs configure **cheap = Sonnet, middle = Opus, expensive = Fable**. Local fallback
-bands are `< 3`, `3–6`, and `>= 7`. Existing installs keep their config: add `models.standard:
-"opus"`, set the two thresholds, then rerun `./install.sh` to generate `mid-task-opus`.
-Model aliases require access in your Claude account; the installer cannot verify that access.
+**Jev is disabled by default.** Enabling it sends the current prompt, model choices and routing
+question to `https://api.typesafe.ai/v1/systemone`. It does not read or send repository files,
+transcripts or earlier conversation turns. Anything pasted into the current prompt is part of
+that request. The offline classifier continues to work without a Jev account or network access.
 
-1. Open [TypeSafe API Keys](https://console.typesafe.ai/keys) in your existing account.
-2. Make the key available as `TYPESAFE_API_KEY` to the process launching Claude Code. Desktop
-   launches may not inherit shell variables; alternatively save only the key in
-   `~/.claude/model-switcher/jev-api-key` with permissions `0600` (`chmod 600` on that file).
-   Never put a key in `config.json`, a project override, a committed file, or a shell command argument.
-3. Merge this into `~/.claude/model-switcher/config.json`:
+### 1. Install the integration and get a key
+
+Run `./install.sh` from this checkout. The runtime and CLI are installed under
+`~/.claude/model-switcher/`. For the short commands used below, add that directory to your
+terminal's `PATH`:
+
+```sh
+export PATH="$HOME/.claude/model-switcher:$PATH"
+```
+
+Alternatively, use `~/.claude/model-switcher/model-switcher` instead of `model-switcher` in
+every command. The installed CLI works without the repository checkout.
+
+Sign in to [TypeSafe API Keys](https://console.typesafe.ai/keys) and create or copy a TypeSafe
+API key. This is a separate credential from your Claude login.
+
+### 2. Store the key outside the repository
+
+The recommended location, including for desktop launches, is:
+
+```text
+~/.claude/model-switcher/jev-api-key
+```
+
+Create the private file, then open it in an editor:
+
+```sh
+mkdir -p "$HOME/.claude/model-switcher"
+touch "$HOME/.claude/model-switcher/jev-api-key"
+chmod 600 "$HOME/.claude/model-switcher/jev-api-key"
+nano "$HOME/.claude/model-switcher/jev-api-key"
+```
+
+Paste **only the key** into the file and save it: no quotes, JSON, `Bearer` prefix or
+`TYPESAFE_API_KEY=` assignment. A trailing newline is fine. Use a regular file rather than a
+symlink; the loader rejects symlinks, non-files, files over 1,024 bytes, and files granting any
+group or other-user access. `chmod 600` gives the expected owner-only permissions.
+
+As an alternative, supply `TYPESAFE_API_KEY` in the environment of the process launching
+Claude. This example prompts without echoing the key or putting its literal value in shell
+history:
+
+```sh
+export TYPESAFE_API_KEY="$(python3 -c 'import getpass; print(getpass.getpass("TypeSafe API key: "))')"
+claude
+```
+
+A non-empty environment value takes precedence over the file. If an old environment key masks
+your saved key, run `unset TYPESAFE_API_KEY` before launching Claude again. Desktop apps may not
+inherit terminal environment variables, so the private file is usually simpler for them.
+
+Do not put the key in `config.json`, project overrides or committed files. The repository
+ignores `jev-api-key`, `.env`, `.env.*` and `logs/`; **`.env` files are not automatically loaded**.
+If you set `MODEL_SWITCHER_HOME`, the key belongs at `$MODEL_SWITCHER_HOME/jev-api-key`, beside
+that installation's `config.json`. The private key and logs are retained on uninstall.
+
+### 3. Configure Jev and the model choices
+
+Merge these fields into `~/.claude/model-switcher/config.json`. Preserve the existing pricing,
+statusline and other settings rather than replacing the whole file:
 
 ```json
 {
   "models": {"simple": "sonnet", "standard": "opus", "complex": "fable"},
-  "routing": {"enabled": true, "tiers": "auto"},
+  "routing": {
+    "enabled": true,
+    "tiers": "auto",
+    "show_decisions": true,
+    "show_exchange": false
+  },
   "complexity": {"standard_threshold": 3, "threshold": 7},
   "jev": {
     "enabled": true,
@@ -202,32 +260,56 @@ Model aliases require access in your Claude account; the installer cannot verify
     "model": "jev-1.13.0",
     "timeout_seconds": 3,
     "min_confidence": 0.7,
-    "log_content": true
+    "log_content": false
   }
 }
 ```
 
-Use `"mode": "shadow"` to compare recommendations while the local router stays in control.
-Missing keys, timeouts, invalid responses, service errors and low confidence all retain the
-local decision. Jev is skipped for prompts over 10,000 characters rather than evaluating a
-truncated request. Commands, nested agents and deliberately selected specialists stay excluded.
-A project can disable external evaluation with `{"jev":{"enabled":false}}` in
-`.claude/model-switcher.json`; it cannot enable it or turn on content logging.
+Fresh installs already configure **cheap = Sonnet, middle = Opus, expensive = Fable**, with
+offline score bands `< 3`, `3–6`, and `>= 7`. Existing installs keep their previous config.
+After changing `models.*`, rerun `./install.sh` to generate the matching `mid-task-opus` and
+`heavy-task-fable` agents. Restart Claude after installation to load the hook settings and
+progress spinner. Model aliases require access in your Claude account; the installer cannot
+verify that access.
 
-Preview or evaluate a synthetic prompt before trying a session:
+| Setting | Behavior |
+|---|---|
+| `jev.enabled: false` | Offline classification only; no automatic Jev calls |
+| `jev.enabled: true`, `mode: "shadow"` | Both evaluators run and are logged; the offline result controls routing |
+| `jev.enabled: true`, `mode: "route"` | A valid, sufficiently confident Jev answer controls routing; otherwise the offline choice is retained |
+| `jev.model` | Evaluation model ID; this integration pins `jev-1.13.0` |
+| `jev.timeout_seconds` | API deadline, including the worker and network; default 3 seconds, supported range 0.1–10 |
+| `jev.min_confidence` | Acceptance threshold from 0 to 1; default 0.7 |
+| `jev.log_content: false` | Log decision metadata without prompt, request or response bodies |
+| `jev.log_content: true` | Also log the prompt, exact routing question, outbound request and received response |
+
+Missing keys, timeouts, invalid responses, service errors and low confidence retain the offline
+choice. Automatic evaluation skips Jev for prompts over 10,000 characters. There are no retries
+on the interactive path. Slash commands, nested-agent prompts and deliberately chosen specialists
+retain their routing exclusions.
+
+### 4. Check the setup before using a Claude session
 
 ```sh
-printf '%s' 'What does this function do?' | model-switcher jev --offline
-printf '%s' 'Add validation and tests to this endpoint' | model-switcher jev
 model-switcher status
-model-switcher logs --limit 10
-model-switcher logs --follow --limit 1
-model-switcher logs --json
-model-switcher logs --follow --json
+model-switcher tiers
+
+# Preview the exact request JSON without a network call or API key.
+printf '%s' 'What does this function do?' | model-switcher jev --offline
+
+# Send one synthetic prompt to Jev and print the selected route.
+printf '%s' 'Add validation and tests to this endpoint' | model-switcher jev
+model-switcher logs --limit 1
 ```
 
-`jev` explicitly runs one evaluation even when hooks or Jev are disabled in config. It reads
-stdin; no transcript or project files are sent. `explain` remains an offline local baseline.
+`status` reports whether a key is available without displaying it or making an API call. The
+live `jev` command explicitly requests one evaluation, even when routing or Jev is disabled
+for automatic hooks. It reads the prompt from stdin and does not change your settings.
+`jev --offline` only previews the API request; `explain "<prompt>"` runs the offline classifier.
+
+After setup, submit prompts normally inside Claude Code. The hooks evaluate eligible requests
+automatically. Testing via `model-switcher jev` checks the evaluator; testing inside Claude also
+checks whether Claude follows the resulting delegation directive.
 
 Every eligible request records the **offline recommendation, Jev recommendation, and final route**.
 The offline result includes its own tier/model, score, base score, learned adjustment, lookup
@@ -236,20 +318,21 @@ confidence, probabilities, latency and status. `agreement` is true/false when bo
 valid choice, or null when Jev did not. The final decision records which evaluator won and why.
 Jev does not replace or erase the offline result, even when the two disagree.
 
-To see the comparison **inside your Claude Code session**, set
-`"routing": {"enabled": true, "show_decisions": true}` in your config and run `./install.sh`.
-New installs enable this display by default; existing configs keep their previous quiet behavior
-until they opt in. Claude shows **Evaluating model routing** while the hook runs, then a notice
-such as `[model-switcher] Offline: sonnet (0/10) | Jev: sonnet (100%, 491 ms; accepted) |
-Selected: sonnet via Jev (agree)`. It appears even when the request stays on the simple model.
-The notice also explains disagreements and fallbacks. By default it contains decision metadata.
-To include the **actual Jev request and JSON response inside the session**, also set
-`routing.show_exchange: true` and `jev.log_content: true`. The notice then includes the prompt,
-question instructions, model choices, response and a request ID. API credentials are redacted.
-Each body is limited to a 3,800-character preview to fit Claude's notice limit; marked previews
-link the request ID to the complete local log. A project may hide the exchange but cannot enable
-it. Changes to these display flags take effect on the next prompt.
-Use the CLI to switch the detailed display without editing JSON:
+### 5. Show summaries or the full exchange inside Claude
+
+With `routing.show_decisions: true`, Claude shows **Evaluating model routing** while the hook
+runs, then a notice like this before answering:
+
+```text
+UserPromptSubmit says: [model-switcher] Offline: sonnet (0/10) | Jev: sonnet (100%, 491 ms; accepted) | Selected: sonnet via Jev (agree)
+```
+
+The summary appears for simple requests too, and explains disagreements or fallback reasons.
+The selected model is the routing recommendation; a heavier model runs in a delegated agent,
+so the parent session's model name in the cost statusline can remain Sonnet.
+
+To see the **actual Jev request and response in that same session notice**, first set
+`jev.log_content` to `true` in your config, then use the display switch:
 
 ```sh
 model-switcher display --details      # show the Jev request and response inside Claude
@@ -258,18 +341,40 @@ model-switcher display                # show the current flag
 ```
 
 `--details` also enables summary notices and requires the existing `jev.log_content: true`
-opt-in. The command changes only display settings, preserves the routing policy and logging
-preferences, and makes no API call. Restart Claude after installing
-to load the hook's spinner setting. Set `show_decisions` to false to hide notices without
-disabling routing or logs.
+opt-in. It sets `routing.show_exchange: true`; `--no-details` turns only that flag off, keeping
+the summary preference and logs. These commands make no API call and take effect on the **next
+prompt, without restarting Claude**. They do not retroactively expand earlier notices.
 
-For a separate log view, `model-switcher logs` shows recent comparisons in readable form. Leave
-`model-switcher logs --follow --limit 1` open in a second terminal while using Claude Code to
-see the offline recommendation and **Jev: evaluating...** before Jev returns, followed by its
-result and the final route. The viewer follows log rotation and waits for new logs if none exist.
-`--json` shows the complete exchange, and `--request-id <id>` filters a single request.
-These commands read local files without API calls; Ctrl+C stops the viewer.
-See [routing log fields and examples](docs/routing-logs.md).
+The detailed notice has `Jev request (POST ...)` and `Jev response (HTTP ...)` sections, showing
+your prompt, the routing question and criteria, model choices, response JSON and a request ID.
+API credentials are redacted. Each body has a 3,800-character preview limit to fit Claude's
+notice limit; larger bodies are marked as truncated, with the complete stored exchange available
+in the local log. Set `routing.show_decisions: false` to hide all session notices. To stop storing
+content as well, separately set `jev.log_content: false`.
+
+### 6. Inspect local logs
+
+| File | Purpose |
+|---|---|
+| `~/.claude/model-switcher/config.json` | Routing, Jev and display settings; never the API key |
+| `~/.claude/model-switcher/jev-api-key` | Private TypeSafe key, mode `0600` |
+| `~/.claude/model-switcher/logs/jev.jsonl` | Current request/result and offline decision records |
+| `~/.claude/model-switcher/logs/jev.jsonl.1` | Previous rotated log |
+
+With `MODEL_SWITCHER_HOME` set, these paths are relative to that directory instead.
+
+```sh
+model-switcher logs --limit 10             # readable comparisons
+model-switcher logs --json --limit 1       # full stored exchange for the latest result
+model-switcher logs --follow --limit 1     # watch evaluation start and finish
+model-switcher logs --follow --json        # stream raw JSONL records
+model-switcher logs --json --request-id <id>
+```
+
+Replace `<id>` with the full request ID shown in the notice or log. `--follow` waits for new
+logs and follows rotation; press Ctrl+C to stop. The viewer reads local files without API calls.
+With content logging off, `--json` still contains metadata only. See
+[routing log fields and examples](docs/routing-logs.md) for the schema and sample comparisons.
 
 Logs pair `jev.request` and `jev.result` records using `request_id`. With content logging on,
 you also see the prompt, exact question instructions and criteria, JSON request, JSON response,
@@ -281,6 +386,30 @@ recognizable bearer credentials are redacted. Arbitrary secrets in prose can rem
 content logs private. Files are owner-only and rotate at 2 MiB, retaining one backup (each file
 can exceed the limit by one bounded record). Logs and the credential file survive uninstall.
 Jev's token usage appears in content logs; the Claude cost statusline excludes Jev charges.
+
+### Disable Jev or troubleshoot a result
+
+To keep offline routing while stopping automatic Jev calls, set `jev.enabled: false`. To stop
+both routing evaluators, set `routing.enabled: false`. An explicit `model-switcher jev` command
+still performs the one evaluation you requested unless `--offline` is supplied.
+
+A project can opt out with `{"jev":{"enabled":false}}` in `.claude/model-switcher.json`.
+Project config cannot enable Jev, content logging or the detailed exchange display. These
+settings take effect on the next eligible prompt.
+
+| What you see | What to check |
+|---|---|
+| `missing_api_key` | Confirm the filename, plain-key contents and `chmod 600`; remove a stale `TYPESAFE_API_KEY` override and check the installation directory |
+| `http_error` with HTTP 401 or 403 | Verify the TypeSafe key and account access in the console |
+| `timeout` or `transport_error` | Check connectivity; the offline recommendation remains in use |
+| `low_confidence` or `invalid_response` | Inspect the logged Jev result; the offline choice is intentionally retained |
+| A summary but no request/response | Set `jev.log_content: true`, run `display --details`, and submit a new prompt; check for a project opt-out |
+| `--details` says content logging is required | Explicitly enable `jev.log_content` in the global config; the display switch does not enable it for you |
+| No automatic evaluation records | Check `routing.enabled`, then submit a normal user prompt; excluded commands and nested agents do not generate records |
+
+For API background and contribution guidance, see the [research analysis](docs/jev-research.md),
+[ADR-0016](docs/adr/0016-optional-jev-pre-routing.md), and
+[dual-result observability design](docs/adr/0017-observable-dual-routing-results.md).
 
 ---
 
