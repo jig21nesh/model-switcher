@@ -8,7 +8,9 @@ network when a subcommand explicitly asks for it.
 import argparse
 import json
 import os
+import stat
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +18,8 @@ import analyze_history
 import classifier_report
 import complexity_router
 import decision_boundary
+import jev_router
+import routing_report
 import status_report
 import tune_threshold
 import uninstall as uninstall_module
@@ -91,6 +95,8 @@ def cmd_explain(args: argparse.Namespace) -> int:
         return 2
 
     config = complexity_router.load_config()
+    if jev_router.settings(config):
+        print("Local baseline only; Jev may choose a different tier. Use 'model-switcher jev' to evaluate live.\n")
     classifier = {} if args.no_classifier else complexity_router.load_classifier()
     detail = complexity_router.analyse_prompt(prompt, classifier)
     threshold = complexity_router.threshold_from(config)
@@ -126,6 +132,75 @@ def cmd_explain(args: argparse.Namespace) -> int:
     decision_boundary.render(prompt, detail, config, classifier, topical_terms(detail, args.transcripts))
     print()
     print_ladder(config, highlight=tier)
+    return 0
+
+
+def cmd_jev(args: argparse.Namespace) -> int:
+    """Explicit live smoke test (or offline request preview); never changes installed settings."""
+    config = _read_config(args.config or config_path())
+    if config is None:
+        return 2
+    prompt = sys.stdin.read(jev_router.PROMPT_MAX_CHARS + 1).strip()
+    if not prompt or len(prompt) > jev_router.PROMPT_MAX_CHARS:
+        print("jev needs a non-empty prompt on stdin (at most 10,000 characters)", file=sys.stderr)
+        return 2
+    if not complexity_router.models_configured(config):
+        print("configure valid models.simple and models.complex first", file=sys.stderr)
+        return 2
+    candidates = {r["tier"] or "simple": r["model"] for r in complexity_router.routing_ladder(config)}
+    options = config.get("jev")
+    options = dict(options) if isinstance(options, dict) else {}
+    if args.offline:
+        print(json.dumps(jev_router.build_request(prompt, candidates, options.get("model", jev_router.MODEL)),
+                         indent=2))
+        return 0
+    # Invoking this command is the opt-in for one live evaluation, even if hooks are disabled.
+    config = dict(config, jev={**options, "enabled": True})
+    local, offline = complexity_router.offline_evaluation(prompt, config)
+    result = jev_router.evaluate(prompt, config, home_dir(), candidates, local, "cli", offline=offline)
+    print(json.dumps(result, indent=2))
+    print(f"Logs: {home_dir() / 'logs' / 'jev.jsonl'}")
+    return 0 if result["reason"] in ("accepted", "shadow", "low_confidence") else 1
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    return routing_report.render(home_dir() / "logs" / "jev.jsonl", args.limit, args.json, args.request_id,
+                                 echo=lambda line: print(line, flush=True), follow=args.follow)
+
+
+def cmd_display(args: argparse.Namespace) -> int:
+    target = args.config or config_path()
+    config = _read_config(target)
+    if config is None:
+        return 2
+    routing = config.get("routing", {})
+    if not isinstance(routing, dict):
+        print("routing must be a JSON object before changing display settings", file=sys.stderr)
+        return 2
+    if args.details is not None:
+        jev = config.get("jev")
+        if args.details and not (isinstance(jev, dict) and jev.get("log_content") is True):
+            print(f"Detailed display requires jev.log_content: true in {target}. "
+                  "No settings changed.", file=sys.stderr)
+            return 2
+        routing = dict(routing, show_exchange=args.details)
+        if args.details:
+            routing["show_decisions"] = True
+        config["routing"] = routing
+        try:
+            # Replace atomically; a failed write must not leave a partial routing config.
+            with tempfile.TemporaryDirectory(prefix=".model-switcher-display-", dir=target.parent) as directory:
+                temporary = Path(directory) / "config.json"
+                temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+                temporary.chmod(stat.S_IMODE(target.stat().st_mode))
+                os.replace(temporary, target)
+        except OSError:
+            print(f"Could not save display settings to {target}", file=sys.stderr)
+            return 2
+    enabled = routing.get("show_exchange") is True
+    print(f"In-session Jev request/response display: {'on' if enabled else 'off'}")
+    if args.details is not None:
+        print("Applies on your next Claude prompt; no restart needed.")
     return 0
 
 
@@ -278,6 +353,24 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"transcripts to check learned terms against (default: {analyze_history.DEFAULT_TRANSCRIPTS})",
     )
     explain.set_defaults(handler=cmd_explain)
+
+    jev = subcommands.add_parser("jev", help="evaluate a prompt from stdin with Jev; logs request and decision")
+    jev.add_argument("--config", type=Path, default=None, help="config.json to read (default: your install)")
+    jev.add_argument("--offline", action="store_true", help="print the request JSON without sending it")
+    jev.set_defaults(handler=cmd_jev)
+
+    logs = subcommands.add_parser("logs", help="compare offline and Jev results with the final route")
+    logs.add_argument("--limit", type=int, default=10, help="number of recent decisions (1–100)")
+    logs.add_argument("--json", action="store_true", help="print complete records, including logged content")
+    logs.add_argument("--request-id", default=None, help="show one request and result by its exact ID")
+    logs.add_argument("--follow", "-f", action="store_true", help="watch evaluations as they start and finish")
+    logs.set_defaults(handler=cmd_logs)
+
+    display = subcommands.add_parser("display", help="show or switch detailed Jev exchange notices inside Claude")
+    display.add_argument("--details", action=argparse.BooleanOptionalAction, default=None,
+                         help="enable request/response display; --no-details returns to the existing summary setting")
+    display.add_argument("--config", type=Path, default=None, help="config.json to update (default: your install)")
+    display.set_defaults(handler=cmd_display)
 
     inspect = subcommands.add_parser(
         "classifier",

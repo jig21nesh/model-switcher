@@ -9,8 +9,11 @@ impact you think it has. You can expect an initial response within 7 days.
 
 ## What this project touches
 
-`model-switcher` runs entirely on your machine. It makes no network calls from the hook or the
-statusline, and it sends nothing anywhere.
+The local scorer and statusline run entirely on your machine. Optional `jev.enabled: true`
+sends the current prompt (not transcripts, files, or session history) and configured model names
+to `https://api.typesafe.ai/v1/systemone`. Jev is disabled on fresh installs. Projects can disable
+it but cannot enable it or turn on content logging. `model-switcher jev` explicitly sends one
+evaluation; `--offline` only previews it. The pricing refresh command also uses HTTPS.
 
 | Surface | What it is | Trust |
 |---|---|---|
@@ -27,8 +30,21 @@ statusline, and it sends nothing anywhere.
 - **Untrusted data is never executed.** Prompt text, transcript content and config values are
   parsed with the stdlib JSON parser and treated as data — never `eval`'d, never interpolated into
   a shell command, never used unvalidated to build a filesystem path.
-- **Nothing is logged.** Prompt content and pricing values are never written to logs or to disk by
-  the hook. Errors are a single line on stderr.
+- **Content logging is opt-in.** Eligible routing evaluations log offline and Jev decisions,
+  or an explicit disabled status for Jev. Routing off produces no new evaluation logs.
+  `jev.log_content: true`
+  also records the prompt, matched scoring signals/terms, question instructions, request and response in owner-only rotating
+  `logs/jev.jsonl` files. The authentication key and recognizable bearer credentials are redacted;
+  arbitrary secrets in prose cannot be detected reliably. Treat these logs as private user data.
+  No authorization headers or pricing values are logged. Errors are one line on stderr.
+- **Session content display is opt-in.** `routing.show_decisions` shows only decision metadata
+  by default. `routing.show_exchange: true` plus `jev.log_content: true` includes bounded,
+  credential-redacted request/response previews in Claude's user-visible hook notice. Terminal
+  controls are escaped, and these bodies are never added to the routing directive. Projects
+  can hide this display but cannot enable it. Treat sessions displaying exchanges as private.
+- **Credentials stay local.** Jev reads `TYPESAFE_API_KEY` or a private `jev-api-key` file in the
+  install directory, never a key embedded in config. HTTP redirects are refused. A worker process
+  bounds DNS, TLS and response reads; failures fall back to local routing, with no retries.
 - **Deletion is narrowly scoped.** The installer only ever removes files it created, identified by
   name and location, and skips symlinks.
 - **Your setup is restorable.** `settings.json` and `CLAUDE.md` are backed up once before the first

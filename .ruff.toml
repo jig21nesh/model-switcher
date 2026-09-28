@@ -19,8 +19,10 @@ known-first-party = [
     "cost_statusline",
     "decision_boundary",
     "generate_agent",
+    "jev_router",
     "manage_claude_md",
     "merge_settings",
+    "routing_report",
     "uninstall",
     "status_report", "tune_threshold", "update_pricing",
 ]

@@ -16,7 +16,7 @@ Simple prompts stay on your cheaper session model, such as Sonnet. Complex promp
 
 After every response, the statusline shows the token cost of the current turn and the whole session, computed offline from the local Claude Code session transcript using your own pricing table.
 
-No network calls. No external classifier. No model involvement in the routing score.
+Local routing is offline by default. Optional [Jev evaluation](#optional-jev-evaluation-before-routing) can assess each request before routing, with a local fallback and inspectable logs.
 
 Works with local Claude Code sessions: CLI, VS Code extension, and desktop local tabs. Does not apply to `claude.ai` cloud sessions.
 
@@ -110,13 +110,13 @@ are withheld because they derive from whatever the operator happened to be worki
 - Keeps simple prompts on your configured session model
 - Delegates complex prompts to a `heavy-task-*` subagent
 - **Applies the same policy when Claude spawns its own agents** — a `general-purpose` agent handed complex work is rewritten onto the configured tier, so delegated work does not quietly escape the ladder
-- Optionally adds a **third tier** — a `mid-task-*` agent for work that is more than the cheap model but less than the dearest one
+- Includes a **third tier** on fresh installs: Opus between Sonnet and Fable, using `mid-task-opus` for moderate work
 - Names each subagent for its configured model, e.g. `heavy-task-fable`, so the model is visible in the task line
 - **Learns from your own history** which prompts actually become work, and reports the accuracy change before you apply it
-- **Explains any routing decision** without spending a token
+- **Explains the local routing baseline** without spending a token; optionally evaluates with Jev
 - Tracks turn and session cost from the local transcript **and every subagent this session spawned** — priced by cache TTL, so 1-hour cache writes are not billed at the 5-minute rate
 - **Shows what routing saved**, measured against the dearest model the session actually used — and shows nothing until a session has genuinely spanned two models
-- Uses your own pricing table, refreshable with one command — no network calls from the hook or statusline
+- Uses your own pricing table, refreshable with one command — no network calls from the statusline or local scorer
 - Can be switched off globally or overridden per project, without uninstalling
 - Preserves an existing custom statusline if you already have one
 - Adds a marker-delimited routing policy block to `~/.claude/CLAUDE.md`
@@ -125,8 +125,7 @@ are withheld because they derive from whatever the operator happened to be worki
 ## What it does not do
 
 - It does not directly switch the main Claude Code session model per prompt
-- It does not call an external classifier model
-- It does not send your prompt anywhere outside Claude Code
+- External evaluation is disabled unless you opt into Jev
 - It does not calculate your official Anthropic bill
 - It does not work in `claude.ai` cloud sessions
 - It does not provide a hard platform-level guarantee that Claude must delegate every complex prompt
@@ -173,6 +172,118 @@ Requires `python3` (3.10+) on `PATH`.
 
 ---
 
+## Optional Jev evaluation before routing
+
+Jev is a typed decision model from TypeSafe. It evaluates the current request and chooses among
+the configured tiers. Python validates its response and applies a confidence gate. The
+[research analysis](docs/jev-research.md) and [ADR-0016](docs/adr/0016-optional-jev-pre-routing.md)
+explain the trade-offs and contributor-facing architecture.
+
+Fresh installs configure **cheap = Sonnet, middle = Opus, expensive = Fable**. Local fallback
+bands are `< 3`, `3–6`, and `>= 7`. Existing installs keep their config: add `models.standard:
+"opus"`, set the two thresholds, then rerun `./install.sh` to generate `mid-task-opus`.
+Model aliases require access in your Claude account; the installer cannot verify that access.
+
+1. Open [TypeSafe API Keys](https://console.typesafe.ai/keys) in your existing account.
+2. Make the key available as `TYPESAFE_API_KEY` to the process launching Claude Code. Desktop
+   launches may not inherit shell variables; alternatively save only the key in
+   `~/.claude/model-switcher/jev-api-key` with permissions `0600` (`chmod 600` on that file).
+   Never put a key in `config.json`, a project override, a committed file, or a shell command argument.
+3. Merge this into `~/.claude/model-switcher/config.json`:
+
+```json
+{
+  "models": {"simple": "sonnet", "standard": "opus", "complex": "fable"},
+  "routing": {"enabled": true, "tiers": "auto"},
+  "complexity": {"standard_threshold": 3, "threshold": 7},
+  "jev": {
+    "enabled": true,
+    "mode": "route",
+    "model": "jev-1.13.0",
+    "timeout_seconds": 3,
+    "min_confidence": 0.7,
+    "log_content": true
+  }
+}
+```
+
+Use `"mode": "shadow"` to compare recommendations while the local router stays in control.
+Missing keys, timeouts, invalid responses, service errors and low confidence all retain the
+local decision. Jev is skipped for prompts over 10,000 characters rather than evaluating a
+truncated request. Commands, nested agents and deliberately selected specialists stay excluded.
+A project can disable external evaluation with `{"jev":{"enabled":false}}` in
+`.claude/model-switcher.json`; it cannot enable it or turn on content logging.
+
+Preview or evaluate a synthetic prompt before trying a session:
+
+```sh
+printf '%s' 'What does this function do?' | model-switcher jev --offline
+printf '%s' 'Add validation and tests to this endpoint' | model-switcher jev
+model-switcher status
+model-switcher logs --limit 10
+model-switcher logs --follow --limit 1
+model-switcher logs --json
+model-switcher logs --follow --json
+```
+
+`jev` explicitly runs one evaluation even when hooks or Jev are disabled in config. It reads
+stdin; no transcript or project files are sent. `explain` remains an offline local baseline.
+
+Every eligible request records the **offline recommendation, Jev recommendation, and final route**.
+The offline result includes its own tier/model, score, base score, learned adjustment, lookup
+caps, classifier-loaded flag and threshold settings. Jev's result includes its own tier/model,
+confidence, probabilities, latency and status. `agreement` is true/false when both produced a
+valid choice, or null when Jev did not. The final decision records which evaluator won and why.
+Jev does not replace or erase the offline result, even when the two disagree.
+
+To see the comparison **inside your Claude Code session**, set
+`"routing": {"enabled": true, "show_decisions": true}` in your config and run `./install.sh`.
+New installs enable this display by default; existing configs keep their previous quiet behavior
+until they opt in. Claude shows **Evaluating model routing** while the hook runs, then a notice
+such as `[model-switcher] Offline: sonnet (0/10) | Jev: sonnet (100%, 491 ms; accepted) |
+Selected: sonnet via Jev (agree)`. It appears even when the request stays on the simple model.
+The notice also explains disagreements and fallbacks. By default it contains decision metadata.
+To include the **actual Jev request and JSON response inside the session**, also set
+`routing.show_exchange: true` and `jev.log_content: true`. The notice then includes the prompt,
+question instructions, model choices, response and a request ID. API credentials are redacted.
+Each body is limited to a 3,800-character preview to fit Claude's notice limit; marked previews
+link the request ID to the complete local log. A project may hide the exchange but cannot enable
+it. Changes to these display flags take effect on the next prompt.
+Use the CLI to switch the detailed display without editing JSON:
+
+```sh
+model-switcher display --details      # show the Jev request and response inside Claude
+model-switcher display --no-details   # hide the bodies; retain the summary and logs
+model-switcher display                # show the current flag
+```
+
+`--details` also enables summary notices and requires the existing `jev.log_content: true`
+opt-in. The command changes only display settings, preserves the routing policy and logging
+preferences, and makes no API call. Restart Claude after installing
+to load the hook's spinner setting. Set `show_decisions` to false to hide notices without
+disabling routing or logs.
+
+For a separate log view, `model-switcher logs` shows recent comparisons in readable form. Leave
+`model-switcher logs --follow --limit 1` open in a second terminal while using Claude Code to
+see the offline recommendation and **Jev: evaluating...** before Jev returns, followed by its
+result and the final route. The viewer follows log rotation and waits for new logs if none exist.
+`--json` shows the complete exchange, and `--request-id <id>` filters a single request.
+These commands read local files without API calls; Ctrl+C stops the viewer.
+See [routing log fields and examples](docs/routing-logs.md).
+
+Logs pair `jev.request` and `jev.result` records using `request_id`. With content logging on,
+you also see the prompt, exact question instructions and criteria, JSON request, JSON response,
+matched scoring signals and learned terms. Otherwise logs contain metadata and decisions only.
+When routing is on but Jev is disabled, `routing.decision` records the offline result and Jev's
+disabled status, without prompt text. When routing is off, neither evaluator writes new records.
+Auth headers are excluded and the actual API key and
+recognizable bearer credentials are redacted. Arbitrary secrets in prose can remain, so keep
+content logs private. Files are owner-only and rotate at 2 MiB, retaining one backup (each file
+can exceed the limit by one bounded record). Logs and the credential file survive uninstall.
+Jev's token usage appears in content logs; the Claude cost statusline excludes Jev charges.
+
+---
+
 ## Example routing behaviour
 
 | Prompt | Expected route |
@@ -192,7 +303,7 @@ Routing is heuristic-based. You can tune the threshold in the config.
 
 ## When does it delegate?
 
-A prompt is routed to the heavy model when its complexity score reaches `complexity.threshold` (default 3, recalibrated for the request-window scorer in ADR-0014). Real scored examples:
+A prompt is routed to the heavy model when its complexity score reaches `complexity.threshold` (fresh three-tier installs use 7; the legacy two-tier fallback is 3). Real scored examples:
 
 | Score | Verdict | Prompt |
 |---|---|---|
@@ -298,9 +409,9 @@ naive-Bayes text classifier, kept small enough to audit by eye. Five steps:
    the sum to **±3**, so the learned table can nudge a score but never overrule the built-in
    signals. Constants and rationale: ADR-0006; portable format: `docs/classifier-schema.md`.
 
-**Alternatives, and why this one.** The constraints do the choosing: scoring runs on *every
-prompt* before Claude sees it, so it must be offline, deterministic, effectively instant, and
-stdlib-only; the artifact must be human-reviewable and safe to leave on disk.
+**Alternatives for the local baseline.** Local scoring runs on every prompt and stays offline,
+deterministic, fast and stdlib-only. Jev is an optional separate evaluation layer (ADR-0016);
+it does not change the learned artifact or make offline reports call a model.
 
 | Alternative | What it would buy | Why it is not used |
 |---|---|---|
@@ -308,7 +419,7 @@ stdlib-only; the artifact must be human-reviewable and safe to leave on disk.
 | Logistic regression on bag-of-words | Correct handling of correlated terms — today ten synonyms of "deploy" each add weight independently | Needs an optimizer and training infrastructure; on a ~2k-prompt personal corpus the gain over shrunk log-odds is marginal, and per-term evidence gates (the privacy floor) are harder to express |
 | TF-IDF + linear model / SVM | Standard text-classification machinery | Third-party dependencies; the runtime is stdlib-only by hard rule, because these scripts run on every prompt in every session |
 | Sentence embeddings + small classifier | Synonyms, paraphrase, and non-English prompts (the scorer's real blind spot) | A model download and per-prompt inference on the interactive path; scoring must stay offline, deterministic, and dependency-free |
-| LLM-as-router (ask a cheap model to classify) | The highest ceiling — real understanding of the ask | Tokens, latency, and network on exactly the path that must cost and leak nothing; also non-deterministic, so `explain` could disagree with what routing actually did |
+| Online model evaluator | Semantic judgment beyond vocabulary | Available as opt-in Jev evaluation, with latency and data-sharing trade-offs; `explain` remains the local baseline |
 
 Two honest limitations follow from the choice: term independence (correlated vocabulary
 over-counts, bounded by the ±3 clamp) and literal matching (no stemming, so `refactor` and
@@ -319,7 +430,8 @@ and write the same file, and the router would not change at all.
 
 ### Pick a threshold from evidence
 
-`complexity.threshold` ships as `3`, calibrated against a real corpus (ADR-0014) rather than guessed. `tune`
+The original two-tier threshold was `3` (ADR-0014). Fresh three-tier installs use `3` for Opus
+and `7` for Fable as starting boundaries, not newly calibrated results. `tune`
 answers the question the default was standing in for: on **your** history, what did prompts at each
 score actually turn into, and what would a different threshold have delegated, caught and cost?
 
@@ -576,9 +688,10 @@ flowchart TD
 
     C[("config.json<br/>models · threshold · pricing")] -.-> H
 
-    H -->|"score < standard_threshold"| S["Answered in-session<br/>simple model"]
-    H -->|"standard_threshold <= score < threshold<br/>(3-tier only)"| M["additionalContext:<br/>delegate to mid-task"]
-    H -->|"score >= threshold"| D["additionalContext:<br/>delegate to heavy-task"]
+    H --> J["Optional Jev evaluation<br/>confidence gate; local fallback"]
+    J -->|"simple tier"| S["Answered in-session<br/>simple model"]
+    J -->|"standard tier (3-tier only)"| M["additionalContext:<br/>delegate to mid-task"]
+    J -->|"complex tier"| D["additionalContext:<br/>delegate to heavy-task"]
     H -->|"models not configured"| Q["Claude asks you to confirm<br/>models and saves config.json"]
     H -->|"routing disabled<br/>(global or project override)"| S
 
@@ -678,10 +791,14 @@ symlink the script once to type just `model-switcher`.
 | `model-switcher classifier` | What the learned classifier contains: every term and weight, which of your projects taught it each word, and how much of the table is noise | `--transcripts` |
 | `model-switcher learn` | Rebuilds the learned weights from your own transcript history and reports before/after routing accuracy; writes a candidate only | `--apply` to promote, `--max-sessions` |
 | `model-switcher tune` | What your history says `complexity.threshold` should be, with cost and precision at each candidate value | `--transcripts`, `--max-sessions` |
+| `model-switcher jev` | Evaluates a prompt from stdin with Jev and logs the result | `--offline` (request preview), `--config` |
+| `model-switcher display` | Shows or switches detailed Jev request/response notices inside Claude | `--details`, `--no-details`, `--config` |
+| `model-switcher logs` | Shows offline and Jev recommendations, disagreement, and the final model choice | `--follow` / `-f`, `--limit`, `--json`, `--request-id` |
 | `model-switcher pricing` | Compares your rate table against the maintained one | `--offline` (bundled table), `--yes` (apply) |
 | `model-switcher uninstall` | Dry run of a full removal; your `config.json` and learned classifier survive | `--yes` (actually do it) |
 
-Every command works offline, reads only local files, and never sends anything anywhere.
+Analysis commands work offline. `pricing` fetches rates unless `--offline`; `jev` sends the supplied
+prompt to TypeSafe unless `--offline`. Hook evaluations require `jev.enabled: true`.
 
 ### From inside a session
 
@@ -747,7 +864,7 @@ All configuration lives in `~/.claude/model-switcher/config.json`.
   "models": {
     "complex": "fable",
     "simple": "sonnet",
-    "standard": null
+    "standard": "opus"
   }
 }
 ```
@@ -763,7 +880,7 @@ Three models can be configured, from dearest to cheapest:
 - Aliases (`opus`, `sonnet`, `haiku`, `fable`) or full model IDs (`claude-opus-4-8`) are accepted.
 - `complex` is the model the `heavy-task-*` agent runs on. **After changing it, re-run `./install.sh`** so the agent file is regenerated (and renamed for the new model).
 - `simple` is the session model the installer writes into `settings.json`.
-- `standard` is optional and enables the **third tier** — see below. Leave it `null` for the two-tier default.
+- `standard` is optional and enables the **third tier** — see below. Set it to `null` for a two-tier setup; fresh installs use `opus`.
 - If `complex` or `simple` is missing or `null`, Claude asks you to confirm models at the start of your next prompt and saves your answer here.
 
 Whatever you set, `model-switcher tiers` prints the ladder your config actually produces:
@@ -792,7 +909,8 @@ middle band:
 }
 ```
 
-Both thresholds are set explicitly here; the shipped default is `3` with no middle tier.
+This is an alternative ladder. Fresh installs use Sonnet / Opus / Fable with thresholds 3 and 7.
+Existing configurations are preserved during upgrades.
 
 | Score | Routes to |
 |---|---|
@@ -873,8 +991,7 @@ model-switcher pricing --offline    # use the bundled table, no network
 
 The check exits non-zero when your rates have drifted, so it works in a scheduled job. It fetches
 `config/pricing.json` from this repo over HTTPS, validates every rate before writing anything, and
-leaves models it does not recognise — including any you added yourself — untouched. The hook and
-the statusline never make network calls; this is the only command that does.
+leaves models it does not recognise — including any you added yourself — untouched. The statusline stays offline. Jev evaluation is the other optional network path.
 
 > [!WARNING]
 > Model prices change. `claude-sonnet-5` currently shows introductory pricing that reverts to $3.00/$15.00 after 2026-08-31. Re-run the pricing check rather than trusting a table you installed months ago.
@@ -893,7 +1010,7 @@ A model entry is used only when all four required rates are usable numbers — a
 
 Prompts scoring at or above the threshold (0–10, integer or float, clamped to 1–10) are delegated. Raise it if too much gets delegated, lower it for more heavy-model routing. Don't guess — `model-switcher tune` shows what your own history says. Pricing and threshold changes apply immediately — only `models.complex` needs a re-install.
 
-The default of `3` is a starting guess, not a measurement. `tune` replaces the guess with your own
+Fresh three-tier boundaries (3 and 7) are starting policy choices. `tune` replaces the guess with your own
 history — see [Pick a threshold from evidence](#pick-a-threshold-from-evidence) below.
 
 ### 4. Switch routing on and off
@@ -1130,7 +1247,8 @@ Not directly — Claude Code does not expose a hard per-prompt model switch from
 
 ### Does this send my prompt to another service?
 
-No. The complexity score is calculated locally using an offline heuristic — no network calls, no external classifier.
+By default, no. Enabling Jev sends the current request and model menu to TypeSafe before routing.
+The local scorer, transcript analysis and statusline remain offline. See [Jev setup](#optional-jev-evaluation-before-routing).
 
 ### Does the cost tracker show my real bill?
 

@@ -87,7 +87,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 mkdir -p "$INSTALL_DIR/state" "$AGENTS_DIR"
-cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/hooks/agent_router.py" "$REPO_DIR/statusline/cost_statusline.py" \
+cp "$REPO_DIR/hooks/complexity_router.py" "$REPO_DIR/hooks/agent_router.py" "$REPO_DIR/hooks/jev_router.py" \
+  "$REPO_DIR/statusline/cost_statusline.py" \
   "$REPO_DIR/scripts/merge_settings.py" "$REPO_DIR/scripts/manage_claude_md.py" \
   "$REPO_DIR/config/claude-md-section.md" "$INSTALL_DIR/"
 # The maintenance CLI and everything it needs, so pricing/learn/explain keep working after the
@@ -96,14 +97,15 @@ cp "$REPO_DIR/scripts/cli.py" "$REPO_DIR/scripts/analyze_history.py" \
   "$REPO_DIR/scripts/update_pricing.py" "$REPO_DIR/scripts/generate_agent.py" \
   "$REPO_DIR/scripts/uninstall.py" "$REPO_DIR/scripts/status_report.py" \
   "$REPO_DIR/scripts/tune_threshold.py" "$REPO_DIR/scripts/classifier_report.py" \
-  "$REPO_DIR/scripts/decision_boundary.py" "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
+  "$REPO_DIR/scripts/decision_boundary.py" "$REPO_DIR/scripts/routing_report.py" \
+  "$REPO_DIR/config/pricing.json" "$INSTALL_DIR/"
 cp "$REPO_DIR/bin/model-switcher" "$INSTALL_DIR/model-switcher"
 chmod +x "$INSTALL_DIR/model-switcher"
 [ -f "$CONFIG" ] || cp "$REPO_DIR/config/config.example.json" "$CONFIG"
 
 COMPLEX_MODEL="$(read_config_model complex fable)"
 SIMPLE_MODEL="$(read_config_model simple sonnet)"
-# Optional middle tier. Empty means a two-tier install, which is the default.
+# Optional middle tier. Fresh installs use Opus; existing two-tier configs stay valid.
 STANDARD_MODEL="$(read_config_model standard "")"
 
 AGENT_INFO=$(python3 "$REPO_DIR/scripts/generate_agent.py" install \

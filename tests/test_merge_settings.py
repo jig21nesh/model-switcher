@@ -109,6 +109,30 @@ class TestForeignHooksMentioningTheName:
         assert remaining == [{"hooks": [{"type": "command", "command": "echo mine"}]}]
 
 
+def test_visible_routing_upgrades_existing_hooks_and_can_be_disabled(paths):
+    run_cli('install', paths)
+    settings = read(paths['settings'])
+    custom = {'type': 'command', 'command': 'echo mine', 'statusMessage': 'My own spinner'}
+    settings['hooks']['UserPromptSubmit'][0]['hooks'].append(custom)
+    paths['settings'].write_text(json.dumps(settings))
+    paths['config'].write_text(json.dumps({'routing': {'show_decisions': True}}))
+    run_cli('install', paths)
+    settings = read(paths['settings'])
+    for event in ('UserPromptSubmit', 'PreToolUse'):
+        assert settings['hooks'][event][0]['hooks'][0]['statusMessage'] == 'Evaluating model routing'
+        assert len(settings['hooks'][event]) == 1
+    assert settings['hooks']['UserPromptSubmit'][0]['hooks'][1] == custom
+    # User-provided status text on an owned hook also survives reinstall.
+    settings['hooks']['PreToolUse'][0]['hooks'][0]['statusMessage'] = 'My routing spinner'
+    paths['settings'].write_text(json.dumps(settings))
+    paths['config'].write_text(json.dumps({'routing': {'show_decisions': False}}))
+    run_cli('install', paths)
+    settings = read(paths['settings'])
+    assert 'statusMessage' not in settings['hooks']['UserPromptSubmit'][0]['hooks'][0]
+    assert settings['hooks']['PreToolUse'][0]['hooks'][0]['statusMessage'] == 'My routing spinner'
+    assert settings['hooks']['UserPromptSubmit'][0]['hooks'][1] == custom
+
+
 class TestMalformedSettings:
     def test_invalid_json_fails_cleanly_and_touches_nothing(self, paths, capsys):
         paths["settings"].write_text("{not json")

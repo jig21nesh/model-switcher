@@ -7,6 +7,8 @@ Per-prompt model routing + offline cost statusline for Claude Code. See README.m
 - Python 3.10+ stdlib only at runtime (CI matrix covers 3.10–3.14); `pytest`/`pytest-cov` are the
   only dev dependencies. `ruff` and `shellcheck` are CI-only and never installed by contributors.
 - `hooks/complexity_router.py` — UserPromptSubmit hook (scoring + delegation directive).
+- `hooks/jev_router.py` — optional online evaluation and paired offline/Jev decision logs.
+- `scripts/routing_report.py` — local `logs` viewer; reads traces without calling a model.
 - `statusline/cost_statusline.py` — statusline command (offline cost from transcript).
 - `scripts/merge_settings.py` — settings.json install/uninstall logic (all merge logic lives here, not in bash).
 - `scripts/manage_claude_md.py` — marker-managed routing-policy block in the user's global CLAUDE.md; block text ships in `config/claude-md-section.md`.
@@ -22,10 +24,10 @@ Per-prompt model routing + offline cost statusline for Claude Code. See README.m
 ## Hard rules
 
 - Hook and statusline scripts must never crash or block: the router fails open (exit 0, no output), the statusline always prints a line.
-- All stdin, prompt text, and transcript content is untrusted input: stdlib JSON parsing only, never eval, never interpolate it into shell commands, never write it to logs.
+- All stdin, prompt text, and transcript content is untrusted input: stdlib JSON parsing only, never eval, never interpolate it into shell commands. The sole prompt-logging exception is explicit `jev.log_content` opt-in (ADR-0016).
 - No new runtime dependencies — these scripts run on every prompt in every session.
-- No `Date`/network calls in the scoring path: scoring must stay deterministic and offline.
-- Never log prompt content or pricing config values; errors go to stderr as one line.
+- The local scoring functions stay deterministic and offline. Optional Jev evaluation is isolated in `hooks/jev_router.py`, with a subprocess deadline and local fallback (ADR-0016).
+- Never log pricing config values or credentials. Jev prompt/request/response logs require explicit `jev.log_content: true`, redact the bearer key, and use bounded private files. Errors go to stderr as one line without input or exception text from Jev.
 
 ## Testing
 

@@ -36,12 +36,14 @@ These are not style preferences; breaking one is a bug even if the tests pass.
   output. A routing bug must never block or erase a user's prompt. Exit 2 would erase it.
 - **The statusline always prints exactly one line**, whatever goes wrong.
 - **No runtime dependencies.** These scripts run on every prompt; stdlib only.
-- **Scoring stays deterministic and offline.** No clock reads, no network, no randomness anywhere
-  in the scoring path. It must be reproducible from its inputs alone.
+- **Local scoring stays deterministic and offline.** The optional Jev evaluator is a separate
+  layer with a subprocess deadline and local fallback; `explain`, `learn`, and `tune` stay offline.
 - **All input is hostile.** Prompt text, transcript contents, `config.json`, and project override
   files are untrusted: parse with the stdlib JSON parser, never `eval`, never interpolate into a
-  shell command, never write to a log.
-- **Never log prompt content or pricing values.** Errors go to stderr as a single line.
+  shell command. Jev content logging is the sole explicit opt-in exception (ADR-0016).
+- **Never log credentials or pricing values.** Prompt/request/response logging requires
+  `jev.log_content: true`; logs must be private, bounded and redact the authentication key.
+  Jev errors use static codes rather than raw exception strings.
 
 ## Tests we expect on a PR
 

@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+import jev_router
+
 logging.basicConfig(stream=sys.stderr, level=logging.WARNING, format="model-switcher %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -171,12 +173,20 @@ def merge_project_config(config: dict, override: dict) -> dict:
         base = merged.get(section)
         combined = dict(base) if isinstance(base, dict) else {}
         for key, value in extra.items():
+            # Showing prompt/response bodies in the session requires the user's global opt-in.
+            if section == "routing" and key == "show_exchange" and value is not False:
+                continue
             check = _OVERRIDE_KEY_TYPES.get((section, key))
             if check is not None and not check(value):
                 logger.warning("invalid %s.%s in project override, keeping global value", section, key)
                 continue
             combined[key] = value
         merged[section] = combined
+    # A project may opt out of external evaluation, but cannot opt in, choose an endpoint,
+    # access a credential, or turn on content logging on behalf of the user.
+    jev = override.get("jev")
+    if isinstance(jev, dict) and jev.get("enabled") is False:
+        merged["jev"] = {"enabled": False}
     return merged
 
 
@@ -412,6 +422,40 @@ def select_tier(score: float, config: dict) -> str | None:
     return None
 
 
+def offline_evaluation(prompt: str, config: dict) -> tuple[dict, dict]:
+    """Compute the local verdict and its explanation together, once per request."""
+    classifier = load_classifier()
+    detail = analyse_prompt(prompt, classifier)
+    score = detail["score"]
+    local = {"score": score, "tier": select_tier(score, config), "source": "local", "reason": "local"}
+    offline = {
+        "score": score, "base_score": detail["base"], "learned_adjustment": detail["learned"],
+        "classifier_loaded": bool(classifier), "signals": detail["signals"],
+        "matched_terms": detail["matched_terms"], "caps": detail["caps"],
+        "thresholds": {"complex": threshold_from(config)},
+    }
+    if tiers_configured(config) == 3:
+        offline["thresholds"]["standard"] = standard_threshold_from(config)
+    return local, offline
+
+
+def evaluate_route(prompt: str, config: dict, origin: str = "prompt", *, on_result=None) -> dict:
+    """Local baseline plus optional Jev evaluation. Offline analysis calls score_prompt directly."""
+    local, offline = offline_evaluation(prompt, config)
+    if not routing_enabled(config) or not models_configured(config):
+        return local
+    candidates = {rung["tier"] or "simple": rung["model"] for rung in routing_ladder(config)}
+    try:
+        return jev_router.evaluate(prompt, config, home_dir(), candidates, local, origin,
+                                   offline=offline, on_result=on_result)
+    except Exception:  # noqa: BLE001
+        logger.warning("Jev evaluation failed; using local routing")
+        result = dict(local, reason="evaluation_error")
+        jev_router.record_result(home_dir(), jev_router.trace_for(origin), candidates, local, result,
+                                 offline, {"status": "evaluation_error"}, on_result=on_result)
+        return result
+
+
 def routing_ladder(config: dict) -> list[dict]:
     """The score bands a config produces, cheapest first, with the model that serves each.
 
@@ -613,13 +657,16 @@ def _cleanup_stale_state(state_dir: Path) -> None:
             continue
 
 
-def delegation_directive(score: int, tier: str, config: dict) -> str:
+def delegation_directive(score: int, tier: str, config: dict, decision: dict | None = None) -> str:
     model = config["models"][tier]
     agent = agent_name_for(model, tier)
     edge = threshold_from(config) if tier == "complex" else standard_threshold_from(config)
+    basis = f"complexity score {score}/10 (threshold {edge:g})"
+    if decision and decision["source"] == "jev":
+        basis = f"Jev tier evaluation (confidence {decision['jev']['confidence']:.2f}; local score {score}/10)"
     return (
-        f"[model-switcher] MANDATORY ROUTING POLICY — complexity score {score}/10 (threshold "
-        f"{edge:g}): this prompt is classified {TIER_LABELS[tier]}. This session runs on the low-cost "
+        f"[model-switcher] MANDATORY ROUTING POLICY — {basis}: "
+        f"this prompt is classified {TIER_LABELS[tier]}. This session runs on the low-cost "
         f"model tier; work at this level must be executed by the '{agent}' subagent (configured "
         f"model: {model}). Do not perform this task yourself: your FIRST action must be "
         f"spawning '{agent}' via your subagent tool (named Agent or Task depending on version), "
@@ -629,7 +676,20 @@ def delegation_directive(score: int, tier: str, config: dict) -> str:
     )
 
 
-def build_context(prompt: str, session_id: str, config: dict) -> str:
+def decision_notices(config: dict) -> list[str] | None:
+    routing = config.get("routing")
+    return [] if isinstance(routing, dict) and routing.get("show_decisions") is True else None
+
+
+def notice_observer(notices: list[str] | None, config: dict):
+    if notices is None:
+        return None
+    routing = config.get("routing")
+    details = isinstance(routing, dict) and routing.get("show_exchange") is True
+    return lambda event: notices.append(jev_router.session_message(event, show_exchange=details))
+
+
+def build_context(prompt: str, session_id: str, config: dict, *, notices: list[str] | None = None) -> str:
     parts: list[str] = []
     state_path = _state_path(session_id)
     state = _load_state(state_path)
@@ -646,10 +706,10 @@ def build_context(prompt: str, session_id: str, config: dict) -> str:
             state["models_nagged"] = True
             state_dirty = True
     else:
-        score = score_prompt(prompt, load_classifier())
-        tier = select_tier(score, config)
+        decision = evaluate_route(prompt, config, on_result=notice_observer(notices, config))
+        score, tier = decision["score"], decision["tier"]
         if tier is not None:
-            parts.append(delegation_directive(score, tier, config))
+            parts.append(delegation_directive(score, tier, config, decision))
 
     # Guarded on the session flag first: when the notice has already fired, none of the checks
     # run at all, so the cost of this is paid once per session rather than once per prompt.
@@ -707,10 +767,14 @@ def run(stdin_text: str) -> str:
     config = merge_project_config(load_config(), load_project_config(payload.get("cwd")))
     if not routing_enabled(config):
         return ""
-    context = build_context(prompt, str(payload.get("session_id", "")), config)
-    if not context:
-        return ""
-    return json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}})
+    notices = decision_notices(config)
+    context = build_context(prompt, str(payload.get("session_id", "")), config, notices=notices)
+    output = {}
+    if context:
+        output["hookSpecificOutput"] = {"hookEventName": "UserPromptSubmit", "additionalContext": context}
+    if notices:
+        output["systemMessage"] = "\n".join(notices)
+    return json.dumps(output) if output else ""
 
 
 def main() -> int:

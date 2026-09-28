@@ -92,6 +92,83 @@ class TestPricingCommand:
         assert "up to date" in capsys.readouterr().out
 
 
+class TestDisplayCommand:
+    def test_switch_preserves_routing_policy_and_changes_next_hook_notice(self, home, monkeypatch, capsys):
+        import complexity_router
+        import jev_router
+
+        config = {'routing': {'enabled': True, 'agents': False},
+                  'jev': {'enabled': True, 'mode': 'route', 'log_content': True},
+                  'models': {'simple': 'sonnet', 'complex': 'fable'}, 'custom': {'keep': 42}}
+        path = home/'config.json'
+        path.write_text(json.dumps(config))
+        path.chmod(0o640)
+        monkeypatch.setenv('TYPESAFE_API_KEY', 'test-key')
+        monkeypatch.setattr(jev_router, 'call_api', lambda *a: {'response': {'answers': {'routing_tier': {
+            'type': 'choice', 'choice': 'simple', 'confidence': 1.0,
+            'probabilities': {'simple': 1.0, 'complex': 0.0}}}}, 'http_status': 200})
+        assert cli.main(['display', '--details']) == 0
+        enabled = json.loads(path.read_text())
+        assert enabled == {**config, 'routing': {**config['routing'], 'show_exchange': True, 'show_decisions': True}}
+        payload = json.dumps({'prompt': 'What does len do?', 'session_id': 'display-switch-test'})
+        assert 'Jev request (POST' in json.loads(complexity_router.run(payload))['systemMessage']
+        assert cli.main(['display', '--no-details']) == 0
+        disabled = json.loads(path.read_text())
+        assert disabled == {**enabled, 'routing': {**enabled['routing'], 'show_exchange': False}}
+        summary = json.loads(complexity_router.run(payload))['systemMessage']
+        assert 'Jev request (POST' not in summary and 'Selected: sonnet' in summary
+        assert path.stat().st_mode & 0o777 == 0o640
+        assert 'no restart needed' in capsys.readouterr().out
+
+    def test_no_flags_reports_without_writes_or_network(self, home, monkeypatch, capsys):
+        path = home/'config.json'
+        original = '{"routing": {"show_exchange": true}, "jev": {"log_content": true}}'
+        path.write_text(original)
+        monkeypatch.setattr(cli.os, 'replace', lambda *a: pytest.fail('read-only command wrote config'))
+        monkeypatch.setattr(cli.jev_router, 'call_api', lambda *a: pytest.fail('display called Jev'))
+        assert cli.main(['display']) == 0
+        assert 'display: on' in capsys.readouterr().out and path.read_text() == original
+
+    @pytest.mark.parametrize('jev', [None, {}, {'log_content': False}, {'log_content': 'true'}])
+    def test_enabling_does_not_silently_enable_content_logging(self, home, capsys, jev):
+        path = home/'config.json'
+        original = json.dumps({'jev': jev, 'routing': {'enabled': False}})
+        path.write_text(original)
+        assert cli.main(['display', '--details']) == 2
+        assert 'requires jev.log_content: true' in capsys.readouterr().err
+        assert path.read_text() == original
+        assert cli.main(['display', '--no-details']) == 0
+        assert json.loads(path.read_text())['routing']['enabled'] is False
+
+    def test_bad_configs_are_not_overwritten(self, home):
+        assert cli.main(['display', '--details']) == 2
+        path = home/'config.json'
+        for original in ('not JSON', '{"routing": false}', '{"routing": []}'):
+            path.write_text(original)
+            assert cli.main(['display', '--no-details']) == 2
+            assert path.read_text() == original
+
+    def test_failed_replace_keeps_original_and_cleans_up_temporary_file(self, home, monkeypatch, capsys):
+        path = home/'config.json'
+        path.write_text('{"jev": {"log_content": true}}')
+        original = path.read_bytes()
+
+        def failed(*a):
+            raise OSError('write failed')
+
+        monkeypatch.setattr(cli.os, 'replace', failed)
+        assert cli.main(['display', '--details']) == 2
+        assert path.read_bytes() == original and list(home.iterdir()) == [path]
+        assert 'Could not save display settings' in capsys.readouterr().err
+
+    def test_explicit_path_and_absent_routing_section(self, home, tmp_path):
+        path = tmp_path/'config;$(touch unexpected).json'
+        path.write_text('{}')
+        assert cli.main(['display', '--no-details', '--config', str(path)]) == 0
+        assert json.loads(path.read_text()) == {'routing': {'show_exchange': False}}
+        assert not (home/'config.json').exists() and not (tmp_path/'unexpected').exists()
+
+
 class TestParser:
     def test_requires_a_subcommand(self):
         with pytest.raises(SystemExit):
