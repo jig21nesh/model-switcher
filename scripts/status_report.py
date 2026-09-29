@@ -14,6 +14,7 @@ from pathlib import Path
 
 import complexity_router as router
 import cost_statusline as statusline
+import jev_router
 
 # Enough history to tell "this never happens" from "this happened once"; few enough that the
 # scan stays well under a second on a large corpus.
@@ -153,6 +154,22 @@ def render_summary(config: dict, home: Path, session_model: object, echo=print) 
     echo(f"  models          {ladder or '(unset)'}")
     echo(f"  pricing         {_pricing_line(config)}")
     echo(f"  classifier      {_classifier_line(home)}")
+    jev = jev_router.settings(config)
+    if jev is None:
+        echo("  Jev             disabled (local routing only)")
+    else:
+        mode = jev.get("mode", "shadow")
+        mode = mode if mode in ("shadow", "route") else "invalid mode"
+        key = "available" if jev_router.api_key(home) else "MISSING"
+        content = "content" if jev.get("log_content") is True else "metadata only"
+        echo(f"  Jev             {mode}; API key {key}; logs {content}")
+    echo(f"  routing logs    {home / 'logs' / 'jev.jsonl'}")
+    routing_options = config.get("routing")
+    visible = isinstance(routing_options, dict) and routing_options.get("show_decisions") is True
+    echo(f"  session notices {'enabled' if visible else 'off (routing.show_decisions)'}")
+    details = visible and routing_options.get("show_exchange") is True
+    echo(f"  session exchange {'enabled (requires jev.log_content)' if details else 'off (routing.show_exchange)'}")
+    echo("  inspect         model-switcher logs --follow (offline + Jev + final route, live)")
     echo("")
 
 

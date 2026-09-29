@@ -152,7 +152,17 @@ def test_installed_hook_and_statusline_run_as_claude_code_invokes_them(claude_di
         input=json.dumps({"prompt": "what does this function do?", "session_id": "lifecycle"}),
         capture_output=True, text=True, env=env, timeout=30,
     )
-    assert simple.returncode == 0 and simple.stdout.strip() == ""
+    assert simple.returncode == 0
+    notice = json.loads(simple.stdout)
+    assert 'hookSpecificOutput' not in notice
+    assert 'Offline: sonnet' in notice['systemMessage'] and 'Jev: disabled' in notice['systemMessage']
+
+    display = subprocess.run(
+        [str(install_dir / 'model-switcher'), 'display', '--no-details'],
+        capture_output=True, text=True, env=env, timeout=30,
+    )
+    assert display.returncode == 0 and 'display: off' in display.stdout
+    assert json.loads((install_dir / 'config.json').read_text())['routing']['show_exchange'] is False
 
     statusline = subprocess.run(
         ["python3", str(install_dir / "cost_statusline.py")],
@@ -293,3 +303,35 @@ def test_uninstall_works_from_the_install_with_no_repo(claude_dir, tmp_path):
     assert not list((claude_dir / "agents").glob("*.md"))
     assert not (install_dir / "model-switcher").exists()
     assert (install_dir / "config.json").exists() and (install_dir / "classifier.json").exists()
+
+
+def test_jev_installs_standalone_and_keeps_private_user_data(claude_dir, tmp_path):
+    run_installer(claude_dir)
+    install_dir = claude_dir / "model-switcher"
+    assert (install_dir / "jev_router.py").exists()
+    assert "model: opus" in (claude_dir / "agents" / "mid-task-opus.md").read_text()
+    assert "model: fable" in (claude_dir / "agents" / "heavy-task-fable.md").read_text()
+    isolated = tmp_path / "isolated-jev"
+    shutil.copytree(install_dir, isolated)
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "MODEL_SWITCHER_HOME": str(isolated)}
+    result = subprocess.run(
+        ["python3", str(isolated / "model-switcher"), "jev", "--offline"],
+        input="What does this do?", capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["state"]["available_models"] == {
+        "simple": "sonnet", "standard": "opus", "complex": "fable",
+    }
+    missing = subprocess.run(
+        ["python3", str(isolated / "model-switcher"), "jev"],
+        input="What does this do?", capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=10,
+    )
+    assert missing.returncode == 1 and 'missing_api_key' in missing.stdout
+    (install_dir / "jev-api-key").write_text("test-only-key")
+    (install_dir / "jev-api-key").chmod(0o600)
+    (install_dir / "logs").mkdir()
+    (install_dir / "logs" / "jev.jsonl").write_text('{"event":"test-only"}\n')
+    run_installer(claude_dir, "--uninstall")
+    assert not (install_dir / "jev_router.py").exists()
+    assert (install_dir / "jev-api-key").read_text() == "test-only-key"
+    assert (install_dir / "logs" / "jev.jsonl").exists()

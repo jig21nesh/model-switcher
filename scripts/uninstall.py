@@ -18,6 +18,7 @@ import merge_settings
 # Everything install.sh copies in, plus the manifest that tracks what it changed.
 INSTALLED_FILES = (
     "complexity_router.py",
+    "jev_router.py",
     "cost_statusline.py",
     "merge_settings.py",
     "manage_claude_md.py",
@@ -28,6 +29,7 @@ INSTALLED_FILES = (
     "tune_threshold.py",
     "classifier_report.py",
     "decision_boundary.py",
+    "routing_report.py",
     "cli.py",
     "analyze_history.py",
     "update_pricing.py",
@@ -37,7 +39,7 @@ INSTALLED_FILES = (
     "installed.json",
 )
 # User data. Removing these would throw away pricing choices and learned history.
-KEPT_FILES = ("config.json", "classifier.json", "classifier.candidate.json")
+KEPT_FILES = ("config.json", "classifier.json", "classifier.candidate.json", "jev-api-key", "logs")
 
 
 def run(claude_dir: Path, install_dir: Path) -> list[str]:

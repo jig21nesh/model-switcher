@@ -63,7 +63,8 @@ def agent_exists(name: str, agents_dir: Path) -> bool:
         return False
 
 
-def decide(tool_input: dict, config: dict, agents_dir: Path) -> tuple[str, str] | None:
+def decide(tool_input: dict, config: dict, agents_dir: Path,
+           *, notices: list[str] | None = None) -> tuple[str, str] | None:
     """The agent to run instead, and why. None leaves the call untouched."""
     requested = tool_input.get("subagent_type")
     if not isinstance(requested, str) or requested not in generic_agents(config):
@@ -72,8 +73,8 @@ def decide(tool_input: dict, config: dict, agents_dir: Path) -> tuple[str, str] 
     if not isinstance(prompt, str) or not prompt.strip():
         return None
 
-    score = router.score_prompt(prompt[:PROMPT_MAX_CHARS], router.load_classifier())
-    tier = router.select_tier(score, config)
+    decision = router.evaluate_route(prompt, config, origin="agent", on_result=router.notice_observer(notices, config))
+    score, tier = decision["score"], decision["tier"]
     if tier is None:
         return None
 
@@ -85,8 +86,11 @@ def decide(tool_input: dict, config: dict, agents_dir: Path) -> tuple[str, str] 
     if target == requested or not agent_exists(target, agents_dir):
         return None
     edge = router.threshold_from(config) if tier == "complex" else router.standard_threshold_from(config)
+    basis = f"scores {score}/10 (threshold {edge:g})"
+    if decision["source"] == "jev":
+        basis = f"was evaluated by Jev (confidence {decision['jev']['confidence']:.2f}; local score {score}/10)"
     reason = (
-        f"[model-switcher] This delegated task scores {score}/10 (threshold {edge:g}), which the "
+        f"[model-switcher] This delegated task {basis}, which the "
         f"routing policy classifies {router.TIER_LABELS[tier]}. '{requested}' inherits the session "
         f"model, so it was rewritten to '{target}' (configured model: {model}). Set "
         '"routing": {"agents": false} in config.json to stop this.'
@@ -115,16 +119,21 @@ def run(stdin_text: str) -> str:
     if not agent_routing_enabled(config) or not router.models_configured(config):
         return ""
 
-    outcome = decide(tool_input, config, router.claude_dir() / "agents")
+    notices = router.decision_notices(config)
+    outcome = decide(tool_input, config, router.claude_dir() / "agents", notices=notices)
+    output = {"systemMessage": "\n".join(notices)} if notices else {}
     if outcome is None:
-        return ""
+        if notices:
+            output["systemMessage"] += " Agent call unchanged."
+        return json.dumps(output) if output else ""
     target, reason = outcome
-    return json.dumps({"hookSpecificOutput": {
+    output["hookSpecificOutput"] = {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",
         "updatedInput": {**tool_input, "subagent_type": target},
         "additionalContext": reason,
-    }})
+    }
+    return json.dumps(output)
 
 
 def main() -> int:

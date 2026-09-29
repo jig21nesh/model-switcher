@@ -7,3 +7,8 @@ coverage.json
 htmlcov/
 .DS_Store
 .demo-capture/
+.env
+.env.*
+# Private Jev credential; also ignored if copied into the repository.
+jev-api-key
+logs/

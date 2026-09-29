@@ -11,6 +11,7 @@ MARKER = "model-switcher"
 # on the bare product name deleted user hooks that merely mentioned it and blocked ours from
 # installing beside them.
 OUR_SCRIPTS = ("complexity_router.py", "agent_router.py", "cost_statusline.py")
+ROUTING_STATUS = "Evaluating model routing"
 
 
 def hook_command(install_dir: Path) -> str:
@@ -86,6 +87,17 @@ def install(settings: dict, manifest: dict, config: dict, install_dir: Path, set
     if not _has_our_hook(settings, "PreToolUse"):
         _append_hook(settings, "PreToolUse",
                      {"matcher": "Task", "hooks": [{"type": "command", "command": agent_hook_command(install_dir)}]})
+
+    routing = config.get("routing")
+    visible = isinstance(routing, dict) and routing.get("show_decisions") is True
+    for event in ("UserPromptSubmit", "PreToolUse"):
+        for matcher in _matcher_list(settings, event):
+            for hook in _hook_entries(matcher):
+                if isinstance(hook, dict) and _is_ours(hook.get("command")):
+                    if visible:
+                        hook.setdefault("statusMessage", ROUTING_STATUS)
+                    elif hook.get("statusMessage") == ROUTING_STATUS:
+                        hook.pop("statusMessage")
 
     current_statusline = settings.get("statusLine")
     if not (isinstance(current_statusline, dict) and _is_ours(current_statusline.get("command"))):

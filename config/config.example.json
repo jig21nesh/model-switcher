@@ -2,15 +2,25 @@
   "models": {
     "complex": "fable",
     "simple": "sonnet",
-    "standard": null
+    "standard": "opus"
   },
   "routing": {
     "enabled": true,
+    "show_decisions": true,
+    "show_exchange": false,
     "tiers": "auto"
   },
   "complexity": {
-    "threshold": 3,
+    "threshold": 7,
     "standard_threshold": 3
+  },
+  "jev": {
+    "enabled": false,
+    "mode": "shadow",
+    "model": "jev-1.13.0",
+    "timeout_seconds": 3,
+    "min_confidence": 0.7,
+    "log_content": false
   },
   "statusline": {
     "wrap_command": null,
