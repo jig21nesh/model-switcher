@@ -178,10 +178,13 @@ Jev is TypeSafe's typed decision model. The offline classifier scores your reque
 then independently chooses a tier, and the router records both recommendations before selecting
 a model. Jev evaluates the task; your configured Claude model still performs it.
 
-**Jev is disabled by default.** Enabling it sends the current prompt, model choices and routing
-question to `https://api.typesafe.ai/v1/systemone`. It does not read or send repository files,
-transcripts or earlier conversation turns. Anything pasted into the current prompt is part of
-that request. The offline classifier continues to work without a Jev account or network access.
+**Jev is disabled by default.** Automatic evaluation also requires user-owned project consent.
+An allowed evaluation sends the prompt, model choices and routing question to
+`https://api.typesafe.ai/v1/systemone`. User prompts may contain pasted private data. If separately
+enabled, delegated-agent evaluation sends Claude's full task prompt, which can include file
+excerpts, tool output or earlier conversation context. The evaluator does not independently read
+repository files or transcripts, but content copied into either kind of prompt can leave the machine.
+The offline classifier continues to work without a Jev account or network access.
 
 ### 1. Install the integration and get a key
 
@@ -256,6 +259,9 @@ statusline and other settings rather than replacing the whole file:
   "complexity": {"standard_threshold": 3, "threshold": 7},
   "jev": {
     "enabled": true,
+    "scope": "projects",
+    "allowed_projects": ["/absolute/canonical/path/to/your/project"],
+    "evaluate_agents": false,
     "mode": "route",
     "model": "jev-1.13.0",
     "timeout_seconds": 3,
@@ -264,6 +270,19 @@ statusline and other settings rather than replacing the whole file:
   }
 }
 ```
+
+Replace the example path with the physical absolute project directory (`pwd -P` in that directory).
+Paths match the exact canonical working directory: no globs, parent-directory inheritance, or
+implicit approval for subdirectories/worktrees. Add each directory you use explicitly (up to 256).
+Missing scope defaults to `"projects"` with an empty allowlist, so existing opt-ins need a scope
+choice when upgrading. `"scope": "all"` explicitly permits automatic evaluation in every directory;
+repository opt-outs still apply where their file is present. Keep `"projects"` for private work.
+
+`jev.evaluate_agents: true` separately permits sending delegated task context, within that scope.
+Without it, agent tasks still route offline. `shadow` mode also sends content; hiding logs or
+session details does not stop transmission. Known credential patterns and the configured API key
+in a prompt cause an offline fallback before transport. This check cannot identify arbitrary
+secrets or personal data. Rejected prompts are not content-logged or displayed.
 
 Fresh installs already configure **cheap = Sonnet, middle = Opus, expensive = Fable**, with
 offline score bands `< 3`, `3–6`, and `>= 7`. Existing installs keep their previous config.
@@ -277,6 +296,9 @@ verify that access.
 | `jev.enabled: false` | Offline classification only; no automatic Jev calls |
 | `jev.enabled: true`, `mode: "shadow"` | Both evaluators run and are logged; the offline result controls routing |
 | `jev.enabled: true`, `mode: "route"` | A valid, sufficiently confident Jev answer controls routing; otherwise the offline choice is retained |
+| `jev.scope: "projects"` | Only exact canonical directories in the user-owned `jev.allowed_projects` list may call Jev automatically; this is the default |
+| `jev.scope: "all"` | Explicitly allow automatic evaluation across projects, subject to repository opt-outs |
+| `jev.evaluate_agents: false` | Keep delegated task prompts offline; `true` separately opts into sharing their context |
 | `jev.model` | Evaluation model ID; this integration pins `jev-1.13.0` |
 | `jev.timeout_seconds` | API deadline, including the worker and network; default 3 seconds, supported range 0.1–10 |
 | `jev.min_confidence` | Acceptance threshold from 0 to 1; default 0.7 |
@@ -302,10 +324,10 @@ printf '%s' 'Add validation and tests to this endpoint' | model-switcher jev
 model-switcher logs --limit 1
 ```
 
-`status` reports whether a key is available without displaying it or making an API call. The
-live `jev` command explicitly requests one evaluation, even when routing or Jev is disabled
+`status` reports the effective policy for the current directory, Jev scope eligibility, and whether a key is available without displaying it or making an API call. The
+live `jev` command explicitly requests one evaluation, independently of automatic project scope and even when routing or Jev is disabled
 for automatic hooks. It reads the prompt from stdin and does not change your settings.
-`jev --offline` only previews the API request; `explain "<prompt>"` runs the offline classifier.
+The live command also checks for sensitive content before sending. `jev --offline` only previews the API request locally (treat that output as private); `explain "<prompt>"` runs the offline classifier.
 
 After setup, submit prompts normally inside Claude Code. The hooks evaluate eligible requests
 automatically. Testing via `model-switcher jev` checks the evaluator; testing inside Claude also
@@ -394,11 +416,15 @@ both routing evaluators, set `routing.enabled: false`. An explicit `model-switch
 still performs the one evaluation you requested unless `--offline` is supplied.
 
 A project can opt out with `{"jev":{"enabled":false}}` in `.claude/model-switcher.json`.
-Project config cannot enable Jev, content logging or the detailed exchange display. These
+Repository config is opt-out-only: it cannot change thresholds, model choices, agent eligibility,
+Jev scope, or enable routing, Jev, content logging or exchange display. These
 settings take effect on the next eligible prompt.
 
 | What you see | What to check |
 |---|---|
+| `project_not_allowed` | Add the exact canonical working directory to `jev.allowed_projects` in the user-owned config, or deliberately choose `scope: "all"` |
+| `agent_not_enabled` | Agent tasks route offline; opt into sharing delegated context with `jev.evaluate_agents: true` if appropriate |
+| `sensitive_content` | A configured credential or recognizable token/private-key marker was detected; no request was sent and only metadata was logged |
 | `missing_api_key` | Confirm the filename, plain-key contents and `chmod 600`; remove a stale `TYPESAFE_API_KEY` override and check the installation directory |
 | `http_error` with HTTP 401 or 403 | Verify the TypeSafe key and account access in the console |
 | `timeout` or `transport_error` | Check connectivity; the offline recommendation remains in use |
@@ -817,7 +843,8 @@ flowchart TD
 
     C[("config.json<br/>models · threshold · pricing")] -.-> H
 
-    H --> J["Optional Jev evaluation<br/>confidence gate; local fallback"]
+    H --> P["User-owned project scope<br/>sensitive-content check"]
+    P --> J["Optional Jev evaluation<br/>confidence gate; local fallback"]
     J -->|"simple tier"| S["Answered in-session<br/>simple model"]
     J -->|"standard tier (3-tier only)"| M["additionalContext:<br/>delegate to mid-task"]
     J -->|"complex tier"| D["additionalContext:<br/>delegate to heavy-task"]
@@ -927,7 +954,7 @@ symlink the script once to type just `model-switcher`.
 | `model-switcher uninstall` | Dry run of a full removal; your `config.json` and learned classifier survive | `--yes` (actually do it) |
 
 Analysis commands work offline. `pricing` fetches rates unless `--offline`; `jev` sends the supplied
-prompt to TypeSafe unless `--offline`. Hook evaluations require `jev.enabled: true`.
+prompt to TypeSafe unless `--offline`. Automatic evaluations require `jev.enabled: true`, project consent, and (for delegated context) `jev.evaluate_agents: true`.
 
 ### From inside a session
 
@@ -941,7 +968,7 @@ files are generated from them.
 | **Turn routing off** (statusline and cost tracking keep working) | `"routing": {"enabled": false}` — see [§4](#4-switch-routing-on-and-off) |
 | Turn routing back on | `"routing": {"enabled": true}` (or remove the key) |
 | Stop only the agent-spawn rewrites | `"routing": {"agents": false}` — see [§1b](#1b-routing-claudes-own-agents) |
-| Turn routing off (or on) for one project only | `.claude/model-switcher.json` in that project — see [§4](#4-switch-routing-on-and-off) |
+| Turn routing off for one project | `.claude/model-switcher.json` in that project — see [§4](#4-switch-routing-on-and-off) |
 | Remove model-switcher entirely | `model-switcher uninstall --yes` — restores your settings byte-for-byte |
 | **Configure expensive / middle / cheap models** | `models.complex` / `models.standard` / `models.simple`, then re-run `./install.sh` — see [§1](#1-choose-your-models) and [§1a](#1a-optional-add-a-middle-tier) |
 | See which model serves which score band | `model-switcher tiers` |
@@ -1051,8 +1078,8 @@ Existing configurations are preserved during upgrades.
 `models.standard` and re-running deletes it again. Check the result with `model-switcher tiers`.
 
 `routing.tiers` controls this explicitly: `"auto"` (the default — three tiers when `models.standard`
-is valid, two otherwise), or a literal `2`/`3`. A project can drop to two tiers with
-`{"routing": {"tiers": 2}}` in `.claude/model-switcher.json` without touching the global config.
+is valid, two otherwise), or a literal `2`/`3`. Per-project tier changes belong in the user-owned
+`project_settings` map described in [§4](#4-switch-routing-on-and-off), never in repository overrides.
 `standard_threshold` is always forced strictly below `threshold`; an overlapping pair is clamped
 with a warning rather than silently making the middle band unreachable.
 
@@ -1064,7 +1091,7 @@ outside the ladder entirely. In one measured corpus, agent transcripts held **44
 tokens and 73% of all output tokens**, and `Task` was called with `general-purpose` 72 times
 against a configured tier agent once.
 
-A `PreToolUse` hook on `Task` closes that gap: it scores the delegated prompt with the same scorer
+A `PreToolUse` hook on `Agent` (or legacy `Task`) closes that gap: it scores the delegated prompt with the same scorer
 and moves generic agents onto the tier the policy says the work belongs to.
 
 ```text
@@ -1077,13 +1104,16 @@ Deliberately narrow, because rewriting a tool call is intrusive:
 | Rule | Why |
 |---|---|
 | **Upgrade only, never downgrade** | A caller that named a specific agent knows something the score does not |
-| Only `general-purpose` and `claude` are eligible | They have no model of their own. Set `routing.generic_agents` to change the list |
-| `Explore` is never promoted | It is a cheap read-only search agent; the heavy tier would spend a lot to do little |
+| Only `general-purpose` and `claude` are eligible by default | Only the user-owned `routing.generic_agents` setting can change the list |
+| `Explore` is excluded by default | It is a cheap read-only search agent; the heavy tier would spend a lot to do little |
 | Top-level spawns only | Inside an agent, promoting would let a tier agent escalate its own helpers |
 | Never rewrites to a missing agent | That would turn a working call into a failing one |
 | Never silent | Every rewrite explains the score, the tier and how to switch it off |
+| Routing never grants permission | Input changes retain Claude’s normal tool approval flow; the hook emits no permission decision |
 
 Disable with `{"routing": {"agents": false}}`; it is also off whenever `routing.enabled` is false.
+Repository content cannot re-enable either switch. Jev evaluates delegated tasks only with the
+separate `jev.evaluate_agents: true` opt-in and project consent; otherwise this hook scores offline.
 
 > **Note:** a rewrite sends work to `models.complex`. If that model has no available quota the
 > delegation fails, and that is not detectable offline — the agent file exists and the config is
@@ -1156,21 +1186,51 @@ With `routing.enabled` set to `false` the hook stays silent: no scoring, no dele
 
 The switch fails closed: an invalid `routing.enabled` value, a `routing` section that is not an object, or a `config.json` that exists but cannot be parsed all read as routing **off**, with a one-line stderr warning. Only a genuinely absent config (a fresh install) keeps the enabled default. Turning routing off cannot be undone by a typo in the same file.
 
-Any project can override the switch and the threshold with a `.claude/model-switcher.json` in the project root:
+Repository `.claude/model-switcher.json` files can only **disable** features:
 
 ```json
 {
-  "routing": { "enabled": true },
-  "complexity": { "threshold": 7 }
+  "routing": {"enabled": false},
+  "jev": {"enabled": false}
 }
 ```
 
-Only the `routing` and `complexity` sections can be overridden per project — `models` and pricing stay global, because the heavy-task agent is generated from the global config at install time. Typical uses: routing off globally but on for one expensive repo, or a higher threshold in a repo where most work is simple. Overrides apply to both hooks: a project that flips routing changes prompt delegation and agent-spawn rewrites alike.
+The accepted repository fields are `false` values for `routing.enabled`, `routing.agents`,
+`routing.show_decisions`, `routing.show_exchange`, `jev.enabled`, `jev.evaluate_agents`, and
+`jev.log_content`. Other fields and values are ignored. A project cannot turn a global opt-out
+back on, replace generic-agent membership, or control future unknown settings.
 
-Two things to watch:
+For legitimate project-specific thresholds or tier menus, use **your own**
+`~/.claude/model-switcher/config.json`:
 
-- Values must be proper JSON types: `enabled` a bare `true`/`false`, `threshold` a number. An invalid value (e.g. `"enabled": "false"` as a quoted string) is ignored with a one-line stderr warning and the **global** setting stays in effect — a typo cannot silently flip routing.
-- The override is read from the session's working directory exactly (`<cwd>/.claude/model-switcher.json`). There is no parent-directory search, so a repo-root override does not apply to a session started in a subdirectory of that repo.
+```json
+{
+  "project_settings": {
+    "/absolute/canonical/path/to/your/project": {
+      "routing": {"tiers": 3},
+      "complexity": {"standard_threshold": 3, "threshold": 8}
+    }
+  }
+}
+```
+
+Merge this into the existing config. Only `routing.tiers`, `complexity.threshold`, and
+`complexity.standard_threshold` are accepted in this map. Global routing/agent opt-outs remain
+authoritative, and repository opt-outs are applied last. Model names and pricing remain global.
+`model-switcher status` reports effective tuning for the current directory; log metadata records
+its source. `explain`, `tune`, and `tiers` continue to describe the global configuration.
+
+Both the user-owned project map and repository override lookup use the exact working directory;
+there is no parent-directory search. User-owned paths must be absolute and canonical (`pwd -P`).
+Starting in a subdirectory or a different worktree requires its own project entry. Project files
+must be regular files, not symlinks (including the `.claude` directory); reads are bounded to 64 KiB.
+
+**Upgrading from v0.4.0:** repository thresholds, tier changes, and project-level re-enablement
+are no longer honoured. Move tuning into `project_settings`; enable routing in the global config
+when desired. For Jev, explicitly set `scope`/`allowed_projects`; delegated context additionally
+requires `evaluate_agents: true`. Run `./install.sh` and restart Claude to update the Agent/Task
+hook matcher. The installer retains your config, keys, logs, and unrelated hooks. See
+[ADR-0018](docs/adr/0018-routing-trust-boundaries.md) for the security rationale.
 
 ---
 
@@ -1293,7 +1353,7 @@ Beyond the unit suite, the full session lifecycle was exercised end-to-end with 
 | Session start | Setup nags fire once (missing config, null pricing); slash-command first prompts preserve the nag; garbage stdin, path-traversal session IDs, and corrupted config all fail open; statusline always prints one line |
 | During session | 12-turn conversation mixing simple/complex/affirmation/negation/stack-trace prompts; subagent and command-tag contexts skipped; hostile shell-metacharacter prompts stay inert data; statusline turn/session math hand-verified incl. sidechains, streamed-duplicate dedupe, and unpriced-model flagging |
 | Resume / restart | Nag state survives resume and re-fires only for new sessions; stale state cleanup touches only its own files; corrupted state self-heals; config flips apply on the next prompt; resumed transcripts never double-count |
-| Routing switch | Global toggle and per-project overrides across every combination; malformed, oversized, injection, and wrong-typed overrides all fall open to the global config |
+| Routing switch | Global opt-outs remain authoritative; repository opt-outs and user-owned tuning are separate; unsafe project files are ignored |
 
 Full scenario tables and findings: [docs/lifecycle-test-report.md](docs/lifecycle-test-report.md).
 

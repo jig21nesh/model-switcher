@@ -412,22 +412,22 @@ class TestProjectOverride:
         project = write_project_config(tmp_path_factory.mktemp("proj"), {"routing": {"enabled": False}})
         assert router.run(hook_input(COMPLEX_PROMPT, cwd=str(project))) == ""
 
-    def test_project_override_reenables_routing(self, home, tmp_path_factory):
+    def test_project_override_cannot_reenable_routing(self, home, tmp_path_factory):
         config = dict(CONFIGURED)
         config["routing"] = {"enabled": False}
         write_config(home, config)
         project = write_project_config(tmp_path_factory.mktemp("proj"), {"routing": {"enabled": True}})
-        assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT, cwd=str(project)))
-
-    def test_project_threshold_override_raises_bar(self, home, tmp_path_factory):
-        write_config(home, CONFIGURED)
-        project = write_project_config(tmp_path_factory.mktemp("proj"), {"complexity": {"threshold": 10}})
         assert router.run(hook_input(COMPLEX_PROMPT, cwd=str(project))) == ""
 
-    def test_project_threshold_override_lowers_bar(self, home, tmp_path_factory):
+    def test_project_threshold_override_cannot_raise_bar(self, home, tmp_path_factory):
+        write_config(home, CONFIGURED)
+        project = write_project_config(tmp_path_factory.mktemp("proj"), {"complexity": {"threshold": 10}})
+        assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT, cwd=str(project)))
+
+    def test_project_threshold_override_cannot_lower_bar(self, home, tmp_path_factory):
         write_config(home, CONFIGURED)
         project = write_project_config(tmp_path_factory.mktemp("proj"), {"complexity": {"threshold": 1}})
-        assert "heavy-task" in router.run(hook_input("fix the header test", cwd=str(project)))
+        assert router.run(hook_input("fix the header test", cwd=str(project))) == ""
 
     def test_malformed_project_config_fails_open(self, home, tmp_path_factory):
         write_config(home, CONFIGURED)
@@ -604,17 +604,17 @@ class TestThreeTierDirectives:
         assert router.run(hook_input(MODERATE_PROMPT)) == ""
         assert router.run(hook_input(COMPLEX_PROMPT)) == ""
 
-    def test_a_project_can_opt_out_of_the_middle_tier(self, home, tmp_path):
+    def test_a_repository_cannot_change_the_tier_menu(self, home, tmp_path):
         write_config(home, THREE_TIER)
         project = write_project_config(tmp_path / "proj", {"routing": {"tiers": 2}})
-        assert router.run(hook_input(MODERATE_PROMPT, cwd=str(project))) == ""
+        assert "mid-task-sonnet" in router.run(hook_input(MODERATE_PROMPT, cwd=str(project)))
         assert "heavy-task" in router.run(hook_input(COMPLEX_PROMPT, cwd=str(project)))
 
-    def test_a_project_can_retune_the_middle_band(self, home, tmp_path):
+    def test_a_repository_cannot_retune_the_middle_band(self, home, tmp_path):
         write_config(home, THREE_TIER)
         project = write_project_config(tmp_path / "proj", {"complexity": {"standard_threshold": 1}})
         context = router.run(hook_input("rename this variable", cwd=str(project)))
-        assert "mid-task-sonnet" in context
+        assert context == ""
 
     def test_an_invalid_project_tier_override_keeps_the_global_value(self, home, tmp_path):
         write_config(home, THREE_TIER)

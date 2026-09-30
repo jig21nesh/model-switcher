@@ -83,10 +83,15 @@ def install(settings: dict, manifest: dict, config: dict, install_dir: Path, set
     if not _has_our_hook(settings):
         _append_hook(settings, "UserPromptSubmit",
                      {"hooks": [{"type": "command", "command": hook_command(install_dir)}]})
-    # Matched on the Task tool so it runs only when Claude actually spawns an agent.
-    if not _has_our_hook(settings, "PreToolUse"):
-        _append_hook(settings, "PreToolUse",
-                     {"matcher": "Task", "hooks": [{"type": "command", "command": agent_hook_command(install_dir)}]})
+    # Upgrade only our entries. A foreign hook sharing a legacy Task matcher must keep
+    # that matcher; preserve our hook options (including custom status text) when moving it.
+    owned = [dict(hook) for matcher in _matcher_list(settings, "PreToolUse")
+             for hook in _hook_entries(matcher)
+             if isinstance(hook, dict) and _is_ours(hook.get("command"))]
+    agent_hook = owned[0] if owned else {"type": "command"}
+    agent_hook["command"] = agent_hook_command(install_dir)
+    _drop_our_hooks(settings, "PreToolUse")
+    _append_hook(settings, "PreToolUse", {"matcher": "^(Agent|Task)$", "hooks": [agent_hook]})
 
     routing = config.get("routing")
     visible = isinstance(routing, dict) and routing.get("show_decisions") is True

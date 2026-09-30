@@ -143,14 +143,15 @@ def _pricing_line(config: dict) -> str:
 
 def render_summary(config: dict, home: Path, session_model: object, echo=print) -> None:
     models = config.get("models") if isinstance(config.get("models"), dict) else {}
-    routing = config.get("routing") if isinstance(config.get("routing"), dict) else {}
     ladder = ", ".join(
         f"{tier}={models[tier]}" for tier in ("simple", "standard", "complex") if models.get(tier)
     )
     echo(f"model-switcher   {home}")
     echo("")
     echo(f"  session model   {session_model or '(unknown)'}   (from settings.json)")
-    echo(f"  routing         {'enabled' if routing.get('enabled', True) is not False else 'DISABLED'}")
+    echo(f"  routing         {'enabled' if router.routing_enabled(config) else 'DISABLED'}")
+    policy = config.get("_policy") if isinstance(config.get("_policy"), dict) else {}
+    echo(f"  project policy  {policy.get('tuning', 'global')}; repository overrides are opt-out only")
     echo(f"  models          {ladder or '(unset)'}")
     echo(f"  pricing         {_pricing_line(config)}")
     echo(f"  classifier      {_classifier_line(home)}")
@@ -163,6 +164,10 @@ def render_summary(config: dict, home: Path, session_model: object, echo=print) 
         key = "available" if jev_router.api_key(home) else "MISSING"
         content = "content" if jev.get("log_content") is True else "metadata only"
         echo(f"  Jev             {mode}; API key {key}; logs {content}")
+        denial = (jev_router.policy_denial(jev, "prompt", str(Path.cwd()))
+                  if router.routing_enabled(config) else "routing_disabled")
+        echo(f"  Jev here        {denial or 'allowed by user-owned scope'}")
+        echo(f"  Jev agents      {'enabled' if jev.get('evaluate_agents') is True else 'off (separate opt-in)'}")
     echo(f"  routing logs    {home / 'logs' / 'jev.jsonl'}")
     routing_options = config.get("routing")
     visible = isinstance(routing_options, dict) and routing_options.get("show_decisions") is True

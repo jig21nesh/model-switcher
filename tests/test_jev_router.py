@@ -15,7 +15,7 @@ import jev_router as jev
 CANDIDATES = {"simple": "sonnet", "standard": "opus", "complex": "fable"}
 CONFIG = {
     "models": CANDIDATES, "complexity": {"threshold": 7, "standard_threshold": 3},
-    "jev": {"enabled": True, "mode": "route", "log_content": True},
+    "jev": {"enabled": True, "scope": "all", "evaluate_agents": True, "mode": "route", "log_content": True},
     "checks": {"in_session": False},
     "pricing_usd_per_mtok": {"sonnet": {"input": 3, "output": 15}},
 }
@@ -65,7 +65,7 @@ def test_each_tier_is_accepted_and_traced(home, monkeypatch, choice):
 
 
 def test_shadow_and_low_confidence_keep_local_route(home, monkeypatch):
-    result = evaluate(home, {**CONFIG, "jev": {"enabled": True, "mode": "shadow"}})
+    result = evaluate(home, {**CONFIG, "jev": {**CONFIG["jev"], "mode": "shadow"}})
     assert result["tier"] == "standard" and result["reason"] == "shadow"
     monkeypatch.setattr(jev, "call_api", lambda *a: {"response": response("simple", 0.2)})
     result = evaluate(home)
@@ -95,7 +95,7 @@ def test_disabled_is_entirely_offline(home, monkeypatch, value):
 ])
 def test_invalid_settings_fall_back_without_network(home, monkeypatch, options):
     monkeypatch.setattr(jev, "call_api", lambda *a: pytest.fail("invalid settings reached API"))
-    result = evaluate(home, {**CONFIG, "jev": {"enabled": True, **options}})
+    result = evaluate(home, {**CONFIG, "jev": {"enabled": True, "scope": "all", "evaluate_agents": True, **options}})
     assert result["reason"] == "invalid_config" and result["source"] == "local"
 
 
@@ -156,14 +156,14 @@ def test_service_failures_fall_back_and_are_logged(home, monkeypatch, error):
 
 
 def test_metadata_default_and_credential_redaction(home, monkeypatch):
-    evaluate(home, {**CONFIG, "jev": {"enabled": True}})
+    evaluate(home, {**CONFIG, "jev": {"enabled": True, "scope": "all"}})
     request, reply = logs(home)
     assert "request" not in request and "response" not in reply
     key = os.environ["TYPESAFE_API_KEY"]
     body = response()
-    body["echo"] = key
+    body["echo"] = key + " Bearer another-secret sk-abcdefghijklmnop"
     monkeypatch.setattr(jev, "call_api", lambda *a: {"response": body})
-    prompt = key + " Bearer another-secret sk-abcdefghijklmnop $(touch /tmp/never)\nsecond line"
+    prompt = "synthetic task $(touch /tmp/never)\nsecond line"
     evaluate(home, prompt=prompt)
     text = (home / "logs" / "jev.jsonl").read_text()
     assert key not in text and "another-secret" not in text and "sk-abcdefghijklmnop" not in text
@@ -616,7 +616,7 @@ def test_session_exchange_redacts_credentials_and_escapes_control_characters(hom
     reply = response('simple')
     reply['untrusted'] = key + ' Bearer abcdef123456 \x1b]52;c;payload\x07\n'
     monkeypatch.setattr(jev, 'call_api', lambda *a: {'response': reply})
-    notice = json.loads(router.run(json.dumps({'prompt': 'hello ' + key})))['systemMessage']
+    notice = json.loads(router.run(json.dumps({'prompt': 'hello'})))['systemMessage']
     assert key not in notice and 'abcdef123456' not in notice and '[REDACTED]' in notice
     assert '\x1b' not in notice and '\x07' not in notice and '\\u001b' in notice
 
@@ -643,9 +643,11 @@ def test_exchange_distinguishes_unsent_request_from_missing_response(home, monke
     else:
         monkeypatch.setattr(jev, 'call_api', lambda *a: {'error': error})
     notice = json.loads(router.run(json.dumps({'prompt': 'What is a tuple?'})))['systemMessage']
-    assert 'No response body recorded' in notice
-    assert ('Not sent' in notice) is (error == 'missing_api_key')
-    if error == 'timeout':
+    if error == 'missing_api_key':
+        assert 'content unavailable' in notice
+        assert 'What is a tuple?' not in notice
+    else:
+        assert 'No response body recorded' in notice
         assert 'What is a tuple?' in notice
 
 
@@ -668,10 +670,9 @@ def test_project_can_hide_exchange_but_cannot_enable_it():
     assert unchanged['routing']['show_exchange'] is False
 
 
-def test_oversized_prompt_records_bounded_content_and_skipped_reason(home):
+def test_oversized_prompt_records_only_metadata_and_skipped_reason(home):
     router.evaluate_route('x' * 20_000, CONFIG)
     entry = logs(home)[-1]
-    assert entry['prompt_truncated'] is True
-    assert len(entry['prompt']) == jev.PROMPT_MAX_CHARS
+    assert 'prompt' not in entry and 'request' not in entry
     assert entry['jev']['status'] == 'prompt_too_large'
     assert entry['agreement'] is None

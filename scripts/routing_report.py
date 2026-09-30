@@ -66,6 +66,8 @@ def _describe_offline(record: dict, echo) -> None:
              f"learned {_display(offline.get('learned_adjustment', '?'))}")
         echo(f"    Classifier loaded: {_display(offline.get('classifier_loaded', 'unknown'))}; "
              f"thresholds: {_display(offline.get('thresholds', {}))}")
+        if offline.get("policy"):
+            echo(f"    Policy: {_display(offline['policy'])}")
         if offline.get("signals"):
             echo(f"    Signals: {_display(offline['signals'], 600)}")
         if offline.get("matched_terms"):

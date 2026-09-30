@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,62 @@ def test_install_then_uninstall_restores_a_preexisting_setup(claude_dir):
     assert claude_md.read_text(encoding="utf-8") == EXISTING_CLAUDE_MD
     assert not list((claude_dir / "agents").glob("heavy-task-*.md"))
     assert (claude_dir / "model-switcher" / "config.json").exists(), "config must survive uninstall"
+
+
+def test_upgrade_routes_both_agent_names_without_permissions_and_keeps_opt_out(claude_dir, tmp_path):
+    settings_path = claude_dir / "settings.json"
+    original = json.dumps(EXISTING_SETTINGS, indent=4)
+    settings_path.write_text(original)
+    run_installer(claude_dir, "--skip-model")
+    settings = json.loads(settings_path.read_text())
+    owned = settings["hooks"]["PreToolUse"][0]
+    owned["matcher"] = "Task"  # simulate the previous release's matcher
+    foreign = {"matcher": "Task", "hooks": [{"type": "command", "command": "echo unrelated"}]}
+    settings["hooks"]["PreToolUse"].append(foreign)
+    settings_path.write_text(json.dumps(settings))
+    home = claude_dir / "model-switcher"
+    config = json.loads((home / "config.json").read_text())
+    config["jev"]["enabled"] = True  # no scope approval: must remain offline
+    (home / "config.json").write_text(json.dumps(config))
+    run_installer(claude_dir, "--skip-model")
+    updated = json.loads(settings_path.read_text())["hooks"]["PreToolUse"]
+    assert foreign in updated
+    assert any(m.get("matcher") == "^(Agent|Task)$" for m in updated)
+    assert json.loads((home / "config.json").read_text())["jev"] == config["jev"]
+
+    project = tmp_path / "project"
+    (project / ".claude").mkdir(parents=True)
+    override = project / ".claude/model-switcher.json"
+    override.write_text('{"routing":{"enabled":true},"jev":{"enabled":true,"scope":"all"}}')
+    env = {"MODEL_SWITCHER_HOME": str(home), "PATH": os.environ["PATH"],
+           "PYTHONPATH": str(home)}
+    # Stub the installed module's transport so a regression cannot send a real request.
+    code = ("import agent_router as a, jev_router as j; "
+            "j.call_api=lambda *args: (_ for _ in ()).throw(AssertionError('unexpected network')); "
+            "raise SystemExit(a.main())")
+    for tool in ("Agent", "Task"):
+        payload = {"tool_name": tool, "cwd": str(project), "tool_input": {
+            "subagent_type": "general-purpose",
+            "prompt": "refactor auth, migrate schema, implement end-to-end tests"}}
+        result = subprocess.run([sys.executable, "-c", code], input=json.dumps(payload), env=env,
+                                text=True, capture_output=True, timeout=10, check=True)
+        output = json.loads(result.stdout)
+        assert "agent_not_enabled" in output["systemMessage"]
+        block = output["hookSpecificOutput"]
+        assert "permissionDecision" not in block
+        assert block["updatedInput"]["subagent_type"] == "heavy-task-fable"
+
+    config["routing"]["enabled"] = False
+    (home / "config.json").write_text(json.dumps(config))
+    result = subprocess.run([sys.executable, str(home / "complexity_router.py")],
+                            input=json.dumps({"cwd": str(project), "prompt": "refactor everything"}),
+                            env=env, text=True, capture_output=True, timeout=10, check=True)
+    assert result.stdout == ""
+    run_installer(claude_dir, "--uninstall")
+    # The foreign hook added after first installation survives; permissions are unchanged.
+    restored = json.loads(settings_path.read_text())
+    assert restored["permissions"] == EXISTING_SETTINGS["permissions"]
+    assert restored["hooks"]["PreToolUse"] == [foreign]
 
 
 def test_uninstall_restores_nonstandard_formatting_byte_for_byte(claude_dir):

@@ -98,7 +98,7 @@ class TestDisplayCommand:
         import jev_router
 
         config = {'routing': {'enabled': True, 'agents': False},
-                  'jev': {'enabled': True, 'mode': 'route', 'log_content': True},
+                  'jev': {'enabled': True, 'scope': 'all', 'mode': 'route', 'log_content': True},
                   'models': {'simple': 'sonnet', 'complex': 'fable'}, 'custom': {'keep': 42}}
         path = home/'config.json'
         path.write_text(json.dumps(config))

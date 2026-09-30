@@ -83,7 +83,7 @@ class TestUpgrading:
         configure(home, CONFIGURED)
         make_agents(claude, "heavy-task-fable")
         block = json.loads(agent_router.run(hook_input()))["hookSpecificOutput"]
-        assert block["permissionDecision"] == "allow"
+        assert "permissionDecision" not in block
         assert "heavy-task-fable" in block["additionalContext"]
         assert '"agents": false' in block["additionalContext"]
 
