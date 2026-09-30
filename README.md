@@ -1409,6 +1409,13 @@ Contributions are welcome, especially around:
 
 `main` is protected: all changes arrive as pull requests and are reviewed and merged by the maintainer. Open an issue first if you want to discuss a larger change. Start with [CONTRIBUTING.md](CONTRIBUTING.md) — it lists the checks CI runs and the hard rules for code on the per-prompt path. Security issues go through [SECURITY.md](SECURITY.md), privately, rather than a public issue.
 
+## Acknowledgments
+
+Thanks to **[Pooja Kiran Bharadwaj (@poojakira)](https://github.com/poojakira)** for highlighting
+security concerns around project-level routing settings, tool approval handling, and sharing
+prompt content with Jev. Her feedback prompted the improvements documented in
+[ADR-0018](docs/adr/0018-routing-trust-boundaries.md) and [PR #37](https://github.com/jig21nesh/model-switcher/pull/37).
+
 ## Roadmap
 
 - [ ] Add CSV export for cost summaries

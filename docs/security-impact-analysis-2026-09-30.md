@@ -8,6 +8,12 @@ the implemented policy and migration. Installed user settings have not been chan
 
 ## Assessment
 
+The initial three concerns were highlighted by
+**[Pooja Kiran Bharadwaj (@poojakira)](https://github.com/poojakira)** in public LinkedIn feedback.
+Thanks to her for prompting this assessment of project configuration authority, tool approval
+handling, and Jev prompt-data sharing. The additional findings below came from the subsequent
+code review and synthetic probes.
+
 The three concerns in the supplied review warrant changes. The most consequential finding is
 that a repository can turn routing back on after the user disabled it globally. If Jev remains
 enabled in the user's global configuration, this also resumes external evaluation. The
