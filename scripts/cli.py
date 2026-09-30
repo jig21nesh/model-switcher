@@ -269,6 +269,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     config = _read_config(args.config or config_path())
     if config is None:
         return 2
+    config = complexity_router.resolve_project_config(config, str(Path.cwd()))
     home = home_dir()
     session_model = complexity_router.session_model_from_settings()
     status_report.render_summary(config, home, session_model)

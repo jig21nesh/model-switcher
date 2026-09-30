@@ -321,7 +321,7 @@ def baseline_model(config: dict, pricing: dict[str, dict], observed: set[str]) -
 def _routing_state(config: dict) -> tuple[bool, int]:
     """Read the two routing facts worth surfacing without depending on the hook."""
     routing = config.get("routing")
-    if routing is not None and not isinstance(routing, dict):
+    if "routing" in config and not isinstance(routing, dict):
         # The hooks read an ambiguous routing state as off (ADR-0015); saying otherwise here
         # would claim savings from a router that is staying silent.
         return False, 2

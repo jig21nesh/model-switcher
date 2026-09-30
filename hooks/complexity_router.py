@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import re
+import stat
 import sys
 import time
 from pathlib import Path
@@ -133,12 +134,23 @@ def load_config() -> dict:
 def load_project_config(cwd: object) -> dict:
     if not isinstance(cwd, str) or not cwd:
         return {}
-    path = Path(cwd) / ".claude" / "model-switcher.json"
     try:
-        if path.stat().st_size > PROJECT_CONFIG_MAX_BYTES:
-            logger.warning("project override too large, ignoring: %s", path)
+        # Pin the directory and file descriptors: neither a symlink swap nor a FIFO may
+        # redirect or stall this per-prompt read. Bound the read even if the file grows.
+        directory = os.open(Path(cwd) / ".claude", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            fd = os.open("model-switcher.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=directory)
+        finally:
+            os.close(directory)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > PROJECT_CONFIG_MAX_BYTES:
+                return {}
+            data = stream.read(PROJECT_CONFIG_MAX_BYTES + 1)
+        if len(data) > PROJECT_CONFIG_MAX_BYTES:
             return {}
-        override = json.loads(path.read_text(encoding="utf-8"))
+        override = json.loads(data.decode("utf-8"))
         return override if isinstance(override, dict) else {}
     except (OSError, ValueError, RecursionError):
         return {}
@@ -152,10 +164,7 @@ def _is_number(value: object) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
-_OVERRIDE_KEY_TYPES = {
-    ("routing", "enabled"): lambda v: isinstance(v, bool),
-    # A project may drop to two tiers or opt into three, but never name a model: the agent files
-    # are generated from the global config at install time (ADR-0003).
+_PROJECT_TUNING_TYPES = {
     ("routing", "tiers"): lambda v: v == "auto" or (not isinstance(v, bool) and v in (2, 3)),
     ("complexity", "threshold"): _is_number,
     ("complexity", "standard_threshold"): _is_number,
@@ -163,40 +172,55 @@ _OVERRIDE_KEY_TYPES = {
 
 
 def merge_project_config(config: dict, override: dict) -> dict:
-    # Per-project overrides cover behavioural knobs only; models and pricing stay global because
-    # the heavy-task agent is generated from the global config at install time.
+    """Repository content may only opt out. It never grants routing or data-sharing authority."""
     merged = dict(config)
-    for section in ("routing", "complexity"):
+    for section, keys in (("routing", ("enabled", "agents", "show_decisions", "show_exchange")),
+                          ("jev", ("enabled", "evaluate_agents", "log_content"))):
         extra = override.get(section)
         if not isinstance(extra, dict):
             continue
         base = merged.get(section)
-        combined = dict(base) if isinstance(base, dict) else {}
-        for key, value in extra.items():
-            # Showing prompt/response bodies in the session requires the user's global opt-in.
-            if section == "routing" and key == "show_exchange" and value is not False:
-                continue
-            check = _OVERRIDE_KEY_TYPES.get((section, key))
-            if check is not None and not check(value):
-                logger.warning("invalid %s.%s in project override, keeping global value", section, key)
-                continue
-            combined[key] = value
-        merged[section] = combined
-    # A project may opt out of external evaluation, but cannot opt in, choose an endpoint,
-    # access a credential, or turn on content logging on behalf of the user.
-    jev = override.get("jev")
-    if isinstance(jev, dict) and jev.get("enabled") is False:
-        merged["jev"] = {"enabled": False}
+        # An invalid global section must not become valid/enabled merely because a project
+        # supplies a different field. Missing sections retain their normal defaults.
+        if section in merged and not isinstance(base, dict):
+            continue
+        changes = {key: False for key in keys if extra.get(key) is False}
+        if changes:
+            merged[section] = {**(base or {}), **changes}
     return merged
+
+
+def resolve_project_config(config: dict, cwd: object) -> dict:
+    """Apply user-owned tuning for an exact canonical directory, then repository opt-outs."""
+    merged = dict(config)
+    projects = config.get("project_settings")
+    path = jev_router.project_path(cwd)
+    tuning = projects.get(path) if path and isinstance(projects, dict) else None
+    applied = False
+    if isinstance(tuning, dict):
+        for (section, key), check in _PROJECT_TUNING_TYPES.items():
+            extra = tuning.get(section)
+            value = extra.get(key) if isinstance(extra, dict) else None
+            base = merged.get(section)
+            if (value is not None and check(value)
+                    and (section not in merged or isinstance(base, dict))):
+                merged[section] = {**(base or {}), key: value}
+                applied = True
+    override = load_project_config(cwd)
+    effective = merge_project_config(merged, override)
+    effective["_policy"] = {"tuning": "user_project" if applied else "global",
+                            "repository_opt_out": effective != merged,
+                            "repository_config_present": bool(override)}
+    return effective
 
 
 def routing_enabled(config: dict) -> bool:
     """Routing needs a well-formed yes. A user who turned it off must not have it revived by a
     typo, so anything ambiguous reads as off; only an absent section keeps the enabled default
     (ADR-0015)."""
-    routing = config.get("routing")
-    if routing is None:
+    if "routing" not in config:
         return True
+    routing = config.get("routing")
     if not isinstance(routing, dict):
         logger.warning("invalid routing section %r, routing stays off", routing)
         return False
@@ -433,13 +457,14 @@ def offline_evaluation(prompt: str, config: dict) -> tuple[dict, dict]:
         "classifier_loaded": bool(classifier), "signals": detail["signals"],
         "matched_terms": detail["matched_terms"], "caps": detail["caps"],
         "thresholds": {"complex": threshold_from(config)},
+        "policy": config.get("_policy", {"tuning": "global"}),
     }
     if tiers_configured(config) == 3:
         offline["thresholds"]["standard"] = standard_threshold_from(config)
     return local, offline
 
 
-def evaluate_route(prompt: str, config: dict, origin: str = "prompt", *, on_result=None) -> dict:
+def evaluate_route(prompt: str, config: dict, origin: str = "prompt", *, on_result=None, cwd=None) -> dict:
     """Local baseline plus optional Jev evaluation. Offline analysis calls score_prompt directly."""
     local, offline = offline_evaluation(prompt, config)
     if not routing_enabled(config) or not models_configured(config):
@@ -447,7 +472,7 @@ def evaluate_route(prompt: str, config: dict, origin: str = "prompt", *, on_resu
     candidates = {rung["tier"] or "simple": rung["model"] for rung in routing_ladder(config)}
     try:
         return jev_router.evaluate(prompt, config, home_dir(), candidates, local, origin,
-                                   offline=offline, on_result=on_result)
+                                   offline=offline, on_result=on_result, cwd=cwd)
     except Exception:  # noqa: BLE001
         logger.warning("Jev evaluation failed; using local routing")
         result = dict(local, reason="evaluation_error")
@@ -689,7 +714,8 @@ def notice_observer(notices: list[str] | None, config: dict):
     return lambda event: notices.append(jev_router.session_message(event, show_exchange=details))
 
 
-def build_context(prompt: str, session_id: str, config: dict, *, notices: list[str] | None = None) -> str:
+def build_context(prompt: str, session_id: str, config: dict, *, notices: list[str] | None = None,
+                  cwd=None) -> str:
     parts: list[str] = []
     state_path = _state_path(session_id)
     state = _load_state(state_path)
@@ -706,7 +732,7 @@ def build_context(prompt: str, session_id: str, config: dict, *, notices: list[s
             state["models_nagged"] = True
             state_dirty = True
     else:
-        decision = evaluate_route(prompt, config, on_result=notice_observer(notices, config))
+        decision = evaluate_route(prompt, config, on_result=notice_observer(notices, config), cwd=cwd)
         score, tier = decision["score"], decision["tier"]
         if tier is not None:
             parts.append(delegation_directive(score, tier, config, decision))
@@ -764,11 +790,12 @@ def run(stdin_text: str) -> str:
     # is meaningless and would waste the once-per-session nags on a command turn.
     if prompt.lstrip().startswith("/") or COMMAND_TAG_RE.search(prompt):
         return ""
-    config = merge_project_config(load_config(), load_project_config(payload.get("cwd")))
+    config = resolve_project_config(load_config(), payload.get("cwd"))
     if not routing_enabled(config):
         return ""
     notices = decision_notices(config)
-    context = build_context(prompt, str(payload.get("session_id", "")), config, notices=notices)
+    context = build_context(prompt, str(payload.get("session_id", "")), config,
+                            notices=notices, cwd=payload.get("cwd"))
     output = {}
     if context:
         output["hookSpecificOutput"] = {"hookEventName": "UserPromptSubmit", "additionalContext": context}

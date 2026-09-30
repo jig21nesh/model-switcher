@@ -1,7 +1,8 @@
 # Inspect routing decisions
 
 Every eligible prompt or generic-agent task is scored offline before Jev is consulted. With Jev
-enabled, both results are logged independently. This makes disagreements visible without changing
+enabled and the project/origin allowed, both results are logged independently. Denied evaluation
+records its reason alongside the offline result. This makes disagreements visible without changing
 which policy controls the final decision.
 
 ## See evaluations inside Claude Code
@@ -48,7 +49,7 @@ routing, Jev enablement or content logging. `--config` selects another config fi
 These flags are read on every prompt; a display change needs no session restart once the updated
 hook is installed. Request and response bodies each have a 3,800-character preview limit to
 keep the notice within Claude's 10,000-character limit. A truncation marker points to the local
-log and request ID. A missing key is shown as an unsent request; a timeout shows the outbound
+log and request ID. A missing key or denied consent shows metadata only; a timeout shows the outbound
 request and states that no response body was recorded. A project can hide the exchange but
 cannot enable it. Without content logging, the notice explains that content is unavailable.
 The spinner is a progress indication; full streamed request/result details remain available in
@@ -98,6 +99,13 @@ With `jev.mode: route`, Jev controls the route when its answer is valid and meet
 missing credentials and low confidence retain the offline choice. Both recommendations remain
 visible even when only one is used.
 
+`project_not_allowed`, `agent_not_enabled`, and `sensitive_content` mean Jev was not called.
+These results omit prompt bodies and learned terms even when content logging is enabled.
+Automatic Jev calls require user-owned `scope`/`allowed_projects`; delegated task prompts need
+`evaluate_agents: true` as well. `shadow` still transmits content. The explicit `jev` CLI command
+consents to one call independently of automatic scope, subject to the sensitive-content check.
+See [setup and migration](../README.md#optional-jev-evaluation-before-routing).
+
 ## Fields in schema version 2
 
 | Field | Meaning |
@@ -107,6 +115,9 @@ visible even when only one is used.
 | `offline.score`, `base_score`, `learned_adjustment` | Final bounded 0–10 score, built-in contribution, and learned contribution |
 | `offline.classifier_loaded` | Whether a valid learned weight table contributed to evaluation (not whether a word matched) |
 | `offline.thresholds`, `caps` | The thresholds in force and any lookup caps applied |
+| `offline.policy` | Global or user-owned project tuning; whether repository opt-outs changed the effective config |
+| `jev.transmission` | `not_sent` or `attempted`; attempted does not guarantee receipt, and a timeout does not retract a send |
+| `jev.consent` | `projects`, `all`, or `explicit_cli` for evaluated requests |
 | `offline.signals`, `matched_terms` | Scoring evidence; only included with content logging enabled |
 | `jev.tier`, `jev.model` | Jev's independent recommendation, even in shadow mode or below the confidence gate |
 | `jev.confidence`, `probabilities` | The validated decision signal, not a guarantee of correctness |

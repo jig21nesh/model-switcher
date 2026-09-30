@@ -16,12 +16,16 @@
   },
   "jev": {
     "enabled": false,
+    "scope": "projects",
+    "allowed_projects": [],
+    "evaluate_agents": false,
     "mode": "shadow",
     "model": "jev-1.13.0",
     "timeout_seconds": 3,
     "min_confidence": 0.7,
     "log_content": false
   },
+  "project_settings": {},
   "statusline": {
     "wrap_command": null,
     "segments": ["turn", "session", "saved", "tokens", "routing"],

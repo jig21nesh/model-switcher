@@ -36,6 +36,44 @@ CRITERIA = {
     "standard": "Middle model: bounded implementation, ordinary debugging, tests, or changes across a few files.",
     "complex": "Highest-capability model: architecture, subtle cross-system bugs, security audits, major migrations.",
 }
+SECRET_PATTERN = re.compile(
+    r"(?i:\bBearer\s+[A-Za-z0-9._~+/=-]+)"
+    r"|\b(?:sk|ts|tsai)[_-][A-Za-z0-9_-]{12,}"
+    r"|\bapikey_[A-Za-z0-9_]{24,}"
+    r"|-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----"
+)
+
+
+def project_path(cwd: object) -> str | None:
+    """Only absolute, existing canonical directories can match user-owned project consent."""
+    if not isinstance(cwd, str) or not cwd or not Path(cwd).is_absolute():
+        return None
+    try:
+        path = Path(cwd).resolve(strict=True)
+        return str(path) if path.is_dir() else None
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def policy_denial(options: dict, origin: str, cwd: object) -> str | None:
+    # The explicit CLI invocation consents to one request, not to future automatic calls.
+    if origin == "cli":
+        return None
+    if origin not in ("prompt", "agent"):
+        return "invalid_origin"
+    if origin == "agent" and options.get("evaluate_agents") is not True:
+        return "agent_not_enabled"
+    scope = options.get("scope", "projects")
+    if scope == "all":
+        return None
+    if scope != "projects":
+        return "invalid_config"
+    allowed = options.get("allowed_projects", [])
+    if (not isinstance(allowed, list) or len(allowed) > 256
+            or not all(isinstance(p, str) and Path(p).is_absolute() for p in allowed)):
+        return "invalid_config"
+    path = project_path(cwd)
+    return None if path is not None and path in allowed else "project_not_allowed"
 
 
 def _number(value: object, low: float, high: float) -> bool:
@@ -166,8 +204,7 @@ def parse_answer(response: object, candidates: dict) -> dict | None:
 def _redact(text: str, key: str) -> str:
     if key:
         text = text.replace(key, "[REDACTED]")
-    text = re.sub(r"(?i)Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
-    return re.sub(r"\b(?:sk|ts|tsai)[_-][A-Za-z0-9_-]{12,}", "[REDACTED]", text)
+    return SECRET_PATTERN.sub("[REDACTED]", text)
 
 
 def write_log(home: Path, event: dict, key: str = "") -> None:
@@ -282,13 +319,22 @@ def session_message(event: dict, *, show_exchange: bool = False) -> str:
 
 
 def evaluate(prompt: str, config: dict, home: Path, candidates: dict, local: dict, origin: str,
-             *, offline: dict | None = None, on_result=None) -> dict:
+             *, offline: dict | None = None, on_result=None, cwd=None) -> dict:
     options = settings(config)
     trace = trace_for(origin)
     offline = offline or {}
     if options is None:
         record_result(home, trace, candidates, local, local, offline, {"status": "disabled"}, on_result=on_result)
         return local
+    def blocked(reason: str) -> dict:
+        result = dict(local, reason=reason)
+        record_result(home, trace, candidates, local, result, offline,
+                      {"status": reason, "transmission": "not_sent"}, on_result=on_result)
+        return result
+
+    denial = policy_denial(options, origin, cwd)
+    if denial:
+        return blocked(denial)
     mode = options.get("mode", "shadow")
     timeout = options.get("timeout_seconds", 3.0)
     minimum = options.get("min_confidence", 0.7)
@@ -296,6 +342,10 @@ def evaluate(prompt: str, config: dict, home: Path, candidates: dict, local: dic
     result = dict(local, reason="invalid_config")
     content = options.get("log_content") is True
     key = api_key(home)
+    # Inspect only bounded input. Oversized prompts are never sent or content-logged below.
+    inspected = prompt[:PROMPT_MAX_CHARS]
+    if (key and key in inspected) or SECRET_PATTERN.search(inspected):
+        return blocked("sensitive_content")
     started = time.monotonic()
     envelope = {}
     body = None
@@ -335,11 +385,14 @@ def evaluate(prompt: str, config: dict, home: Path, candidates: dict, local: dic
                                   source="jev", reason="accepted")
     jev = {"status": result["reason"], "mode": mode if mode in ("shadow", "route") else "invalid",
            "latency_ms": round((time.monotonic() - started) * 1000, 1),
-           "http_status": envelope.get("http_status")}
+           "http_status": envelope.get("http_status"),
+           "transmission": "attempted" if body is not None else "not_sent",
+           "consent": "explicit_cli" if origin == "cli" else options.get("scope", "projects")}
     if valid:
         jev.update(evaluation_model=model, min_confidence=minimum)
     record_result(home, trace, candidates, local, result, offline, jev,
-                  content=content, prompt=prompt, envelope=envelope, key=key, on_result=on_result, request=body)
+                  content=content and body is not None, prompt=prompt, envelope=envelope,
+                  key=key, on_result=on_result, request=body)
     return result
 
 

@@ -1,4 +1,4 @@
-"""PreToolUse hook on Task: apply the routing policy to agent spawns, not only to prompts.
+"""PreToolUse hook on Agent/Task: apply routing without granting tool permission.
 
 The UserPromptSubmit hook scores what *you* type. It never sees what Claude then delegates:
 subagent prompts are sidechains and do not pass through it. So a policy that says "work at this
@@ -64,7 +64,7 @@ def agent_exists(name: str, agents_dir: Path) -> bool:
 
 
 def decide(tool_input: dict, config: dict, agents_dir: Path,
-           *, notices: list[str] | None = None) -> tuple[str, str] | None:
+           *, notices: list[str] | None = None, cwd=None) -> tuple[str, str] | None:
     """The agent to run instead, and why. None leaves the call untouched."""
     requested = tool_input.get("subagent_type")
     if not isinstance(requested, str) or requested not in generic_agents(config):
@@ -73,7 +73,8 @@ def decide(tool_input: dict, config: dict, agents_dir: Path,
     if not isinstance(prompt, str) or not prompt.strip():
         return None
 
-    decision = router.evaluate_route(prompt, config, origin="agent", on_result=router.notice_observer(notices, config))
+    decision = router.evaluate_route(prompt, config, origin="agent",
+                                     on_result=router.notice_observer(notices, config), cwd=cwd)
     score, tier = decision["score"], decision["tier"]
     if tier is None:
         return None
@@ -103,7 +104,7 @@ def run(stdin_text: str) -> str:
         payload = json.loads(stdin_text)
     except ValueError:
         return ""
-    if not isinstance(payload, dict) or payload.get("tool_name") != "Task":
+    if not isinstance(payload, dict) or payload.get("tool_name") not in ("Task", "Agent"):
         return ""
     # Only top-level spawns. Inside a subagent this would let a tier agent promote its own
     # helpers, compounding cost a level down where nobody is watching.
@@ -113,14 +114,13 @@ def run(stdin_text: str) -> str:
     if not isinstance(tool_input, dict):
         return ""
 
-    # Same config resolution as the prompt router: a project that turns routing off (or on)
-    # applies to the agents its prompts spawn, not only to the prompts themselves.
-    config = router.merge_project_config(router.load_config(), router.load_project_config(payload.get("cwd")))
+    config = router.resolve_project_config(router.load_config(), payload.get("cwd"))
     if not agent_routing_enabled(config) or not router.models_configured(config):
         return ""
 
     notices = router.decision_notices(config)
-    outcome = decide(tool_input, config, router.claude_dir() / "agents", notices=notices)
+    outcome = decide(tool_input, config, router.claude_dir() / "agents",
+                     notices=notices, cwd=payload.get("cwd"))
     output = {"systemMessage": "\n".join(notices)} if notices else {}
     if outcome is None:
         if notices:
@@ -129,7 +129,6 @@ def run(stdin_text: str) -> str:
     target, reason = outcome
     output["hookSpecificOutput"] = {
         "hookEventName": "PreToolUse",
-        "permissionDecision": "allow",
         "updatedInput": {**tool_input, "subagent_type": target},
         "additionalContext": reason,
     }
